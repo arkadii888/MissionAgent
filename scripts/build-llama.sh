@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LLAMA_DIR="$ROOT_DIR/orchestrator/llama.cpp"
+LLAMA_DIR="$ROOT_DIR/agent/llama.cpp"
 BUILD_DIR="$LLAMA_DIR/build"
 
 if [ ! -d "$LLAMA_DIR" ]; then

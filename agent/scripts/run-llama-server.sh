@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORCHESTRATOR_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT_ROOT="$(cd "$ORCHESTRATOR_DIR/.." && pwd)"
+AGENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$AGENT_DIR/.." && pwd)"
 
-ENV_FILE="${ENV_FILE:-$ORCHESTRATOR_DIR/.env.orchestrator}"
+ENV_FILE="${ENV_FILE:-$AGENT_DIR/.env.orchestrator}"
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck source=/dev/null
@@ -13,9 +13,9 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-BINARY_PATH="${BINARY_PATH:-$ORCHESTRATOR_DIR/llama.cpp/build/bin/llama-server}"
-MODEL_PATH="${MODEL_PATH:-$ORCHESTRATOR_DIR/models/gemma-4-E2B-it-Q4_K_M.gguf}"
-PROJ_PATH="${PROJ_PATH:-$ORCHESTRATOR_DIR/models/mmproj-F16.gguf}"
+BINARY_PATH="${BINARY_PATH:-$AGENT_DIR/llama.cpp/build/bin/llama-server}"
+MODEL_PATH="${MODEL_PATH:-$AGENT_DIR/models/gemma-4-E2B-it-Q4_K_M.gguf}"
+PROJ_PATH="${PROJ_PATH:-$AGENT_DIR/models/mmproj-F16.gguf}"
 PORT="${PORT:-8080}"
 NGL="${NGL:-99}"
 CTX_SIZE="${CTX_SIZE:-4096}"

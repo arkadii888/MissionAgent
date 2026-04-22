@@ -83,7 +83,8 @@ cython_debug/
 Thumbs.db
 
 # Local llama.cpp CMake build (see Makefile: build-llama)
-orchestrator/llama.cpp/build/
+agent/llama.cpp/build/
 
 # Models
-models/
+agent/models/*
+!agent/models/.gitkeep
