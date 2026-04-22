@@ -59,3 +59,17 @@ Optional environment file: `agent/.env.orchestrator`. If it exists, the run scri
   ```
 
 For a full list of variables and their defaults, open `agent/scripts/run-llama-server.sh`.
+
+### Test gRPC manually
+Run 
+```
+source .venv/bin/activate
+``` 
+and 
+```
+uv sync
+``` 
+then 
+```
+python -m agent.orchestrator.main
+```

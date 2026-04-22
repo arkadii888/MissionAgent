@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-import internal_communication_pb2 as internal__communication__pb2
+from . import internal_communication_pb2 as internal__communication__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -87,7 +87,6 @@ class InternalService(object):
             internal__communication__pb2.TelemetryResponse.FromString,
             options,
             channel_credentials,
-            insecure,
             call_credentials,
             compression,
             wait_for_ready,
