@@ -29,7 +29,6 @@ JINJA="${JINJA:-1}"
 FLASH_ATTN="${FLASH_ATTN:-on}"
 CNV="${CNV:-1}"
 MLOCK="${MLOCK:-0}"
-IMAGE_PATH="${IMAGE_PATH:-}"
 
 if [ ! -x "$BINARY_PATH" ]; then
   echo "llama-server binary not found or not executable:"
@@ -48,16 +47,10 @@ if [ ! -f "$PROJ_PATH" ]; then
   exit 1
 fi
 
-IMAGE_ARG=()
-if [ -n "$IMAGE_PATH" ]; then
-  IMAGE_ARG=(--image "$IMAGE_PATH")
-fi
-
 CMD=(
   "$BINARY_PATH"
   -m "$MODEL_PATH"
   --mmproj "$PROJ_PATH"
-  "${IMAGE_ARG[@]}"
   --port "$PORT"
   --n-gpu-layers "$NGL"
   -c "$CTX_SIZE"
