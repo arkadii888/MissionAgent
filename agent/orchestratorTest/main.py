@@ -13,6 +13,9 @@ def run_mission_process():
     # vehicle action: 0 - None, 1 - Takeoff, 2 - Land, 3 - TransitionToFw, 4 - TransitionToMc
 
     try:
+        prompt_response = stub.GetPrompt(internal_communication_pb2.Empty())
+        print(f"Prompt from C++: {prompt_response.prompt}")
+
         telemetry = stub.GetTelemetry(internal_communication_pb2.Empty())
 
         base_lat = telemetry.latitude_deg
