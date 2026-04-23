@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1cinternal_communication.proto\"\x07\n\x05\x45mpty\"z\n\x11TelemetryResponse\x12\x14\n\x0clatitude_deg\x18\x01 \x01(\x01\x12\x15\n\rlongitude_deg\x18\x02 \x01(\x01\x12\x1b\n\x13\x61\x62solute_altitude_m\x18\x03 \x01(\x02\x12\x1b\n\x13relative_altitude_m\x18\x04 \x01(\x02\"\xea\x02\n\x0bMissionItem\x12\x14\n\x0clatitude_deg\x18\x01 \x01(\x01\x12\x15\n\rlongitude_deg\x18\x02 \x01(\x01\x12\x1b\n\x13relative_altitude_m\x18\x03 \x01(\x02\x12\x11\n\tspeed_m_s\x18\x04 \x01(\x02\x12\x16\n\x0eis_fly_through\x18\x05 \x01(\x08\x12\x18\n\x10gimbal_pitch_deg\x18\x06 \x01(\x02\x12\x16\n\x0egimbal_yaw_deg\x18\x07 \x01(\x02\x12\x15\n\rcamera_action\x18\x08 \x01(\x05\x12\x15\n\rloiter_time_s\x18\t \x01(\x02\x12\x1f\n\x17\x63\x61mera_photo_interval_s\x18\n \x01(\x01\x12\x1b\n\x13\x61\x63\x63\x65ptance_radius_m\x18\x0b \x01(\x02\x12\x0f\n\x07yaw_deg\x18\x0c \x01(\x02\x12\x1f\n\x17\x63\x61mera_photo_distance_m\x18\r \x01(\x02\x12\x16\n\x0evehicle_action\x18\x0e \x01(\x05\".\n\x0fMissionItemList\x12\x1b\n\x05items\x18\x01 \x03(\x0b\x32\x0c.MissionItem2g\n\x0fInternalService\x12*\n\x0cGetTelemetry\x12\x06.Empty\x1a\x12.TelemetryResponse\x12(\n\x0cStartMission\x12\x10.MissionItemList\x1a\x06.Emptyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1cinternal_communication.proto\"\x07\n\x05\x45mpty\"z\n\x11TelemetryResponse\x12\x14\n\x0clatitude_deg\x18\x01 \x01(\x01\x12\x15\n\rlongitude_deg\x18\x02 \x01(\x01\x12\x1b\n\x13\x61\x62solute_altitude_m\x18\x03 \x01(\x02\x12\x1b\n\x13relative_altitude_m\x18\x04 \x01(\x02\"\xea\x02\n\x0bMissionItem\x12\x14\n\x0clatitude_deg\x18\x01 \x01(\x01\x12\x15\n\rlongitude_deg\x18\x02 \x01(\x01\x12\x1b\n\x13relative_altitude_m\x18\x03 \x01(\x02\x12\x11\n\tspeed_m_s\x18\x04 \x01(\x02\x12\x16\n\x0eis_fly_through\x18\x05 \x01(\x08\x12\x18\n\x10gimbal_pitch_deg\x18\x06 \x01(\x02\x12\x16\n\x0egimbal_yaw_deg\x18\x07 \x01(\x02\x12\x15\n\rcamera_action\x18\x08 \x01(\x05\x12\x15\n\rloiter_time_s\x18\t \x01(\x02\x12\x1f\n\x17\x63\x61mera_photo_interval_s\x18\n \x01(\x01\x12\x1b\n\x13\x61\x63\x63\x65ptance_radius_m\x18\x0b \x01(\x02\x12\x0f\n\x07yaw_deg\x18\x0c \x01(\x02\x12\x1f\n\x17\x63\x61mera_photo_distance_m\x18\r \x01(\x02\x12\x16\n\x0evehicle_action\x18\x0e \x01(\x05\".\n\x0fMissionItemList\x12\x1b\n\x05items\x18\x01 \x03(\x0b\x32\x0c.MissionItem\" \n\x0ePromptResponse\x12\x0e\n\x06prompt\x18\x01 \x01(\t2\x8d\x01\n\x0fInternalService\x12*\n\x0cGetTelemetry\x12\x06.Empty\x1a\x12.TelemetryResponse\x12(\n\x0cStartMission\x12\x10.MissionItemList\x1a\x06.Empty\x12$\n\tGetPrompt\x12\x06.Empty\x1a\x0f.PromptResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -39,6 +39,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_MISSIONITEM']._serialized_end=528
   _globals['_MISSIONITEMLIST']._serialized_start=530
   _globals['_MISSIONITEMLIST']._serialized_end=576
-  _globals['_INTERNALSERVICE']._serialized_start=578
-  _globals['_INTERNALSERVICE']._serialized_end=681
+  _globals['_PROMPTRESPONSE']._serialized_start=578
+  _globals['_PROMPTRESPONSE']._serialized_end=610
+  _globals['_INTERNALSERVICE']._serialized_start=613
+  _globals['_INTERNALSERVICE']._serialized_end=754
 # @@protoc_insertion_point(module_scope)
