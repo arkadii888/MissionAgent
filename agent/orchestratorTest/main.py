@@ -21,8 +21,8 @@ def run_mission_process():
         m10 = 0.00009  # 10 meters step
 
         item1 = internal_communication_pb2.MissionItem()
-        item1.latitude_deg = float("nan")
-        item1.longitude_deg = float("nan")
+        item1.latitude_deg = base_lat
+        item1.longitude_deg = base_lon
         item1.relative_altitude_m = 10.0
         item1.speed_m_s = 1.0
         item1.is_fly_through = False
