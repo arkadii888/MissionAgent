@@ -10,11 +10,14 @@ task optionally advances the mission waypoint index from horizontal distance to 
 
 import asyncio
 import contextlib
+import json
 import logging
 import math
 import os
 from dataclasses import replace
 from typing import Any
+
+from google.protobuf.json_format import MessageToJson
 
 from agent.orchestrator.config import Settings
 from agent.orchestrator.grpc_client import InternalGrpcClient
@@ -225,6 +228,8 @@ async def run_mission_test_loop() -> None:
                     telemetry=tel_map,
                     mission_status=status_line,
                 )
+                log.info("LLM system prompt sent to llama-server:\n%s", system)
+                log.info("LLM user prompt sent to llama-server:\n%s", user)
 
                 try:
                     plan_dict: dict[str, Any] = await llm.plan_mission(system, user)
@@ -233,6 +238,11 @@ async def run_mission_test_loop() -> None:
                     await mission.mark_error(f"llm: {exc}")
                     await asyncio.sleep(prompt_interval)
                     continue
+
+                log.info(
+                    "LLM parsed mission plan (dict after JSON parse):\n%s",
+                    json.dumps(plan_dict, indent=2, ensure_ascii=False),
+                )
 
                 try:
                     proto = mission_plan_to_proto(plan_dict)
@@ -243,6 +253,15 @@ async def run_mission_test_loop() -> None:
                     continue
 
                 name = str(plan_dict.get("mission_name", "mission"))[:64]
+
+                log.info(
+                    "gRPC StartMission payload (JSON view):\n%s",
+                    MessageToJson(
+                        proto,
+                        preserving_proto_field_name=True,
+                        always_print_fields_with_no_presence=True,
+                    ),
+                )
 
                 try:
                     await client.start_mission(proto)

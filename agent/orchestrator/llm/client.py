@@ -1,10 +1,13 @@
 import asyncio
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any
 from urllib import error, request
 
 from .schemas import MISSION_PLAN_SCHEMA, MISSION_PLAN_SCHEMA_NAME
+
+log = logging.getLogger(__name__)
 
 
 class LlamaClient:
@@ -50,6 +53,7 @@ class LlamaClient:
         response = await asyncio.to_thread(self._post_chat_completions, payload)
         try:
             content = self._extract_content_text(response)
+            log.info("llama-server raw assistant content (first attempt):\n%s", content)
             parsed = self._parse_json_from_text(content)
             if not isinstance(parsed, Mapping):
                 raise ValueError("mission plan must be a JSON object")
@@ -71,6 +75,7 @@ class LlamaClient:
             retry_payload["temperature"] = 0.0
             retry_response = await asyncio.to_thread(self._post_chat_completions, retry_payload)
             retry_content = self._extract_content_text(retry_response)
+            log.info("llama-server raw assistant content (retry):\n%s", retry_content)
             retry_parsed = self._parse_json_from_text(retry_content)
             if not isinstance(retry_parsed, Mapping):
                 raise ValueError(f"mission plan must be a JSON object, got: {type(retry_parsed)}")
