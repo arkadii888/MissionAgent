@@ -47,6 +47,27 @@ class InternalGrpcClient:
             timeout=t,
         )
 
+    async def get_prompt(
+        self,
+        timeout: float | None = None,
+    ) -> internal_communication_pb2.PromptResponse:
+        t = self._settings.grpc_timeout_s if timeout is None else timeout
+        return await self._stub.GetPrompt(
+            internal_communication_pb2.Empty(),
+            timeout=t,
+        )
+
+    async def start_mission(
+        self,
+        mission: internal_communication_pb2.MissionItemList,
+        timeout: float | None = None,
+    ) -> internal_communication_pb2.Empty:
+        t = self._settings.grpc_timeout_s if timeout is None else timeout
+        return await self._stub.StartMission(
+            mission,
+            timeout=t,
+        )
+
     async def close(self) -> None:
         await self._channel.close()
 

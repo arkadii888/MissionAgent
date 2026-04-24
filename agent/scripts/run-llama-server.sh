@@ -29,6 +29,7 @@ JINJA="${JINJA:-1}"
 FLASH_ATTN="${FLASH_ATTN:-on}"
 CNV="${CNV:-1}"
 MLOCK="${MLOCK:-0}"
+REASONING="${REASONING:-off}"
 
 if [ ! -x "$BINARY_PATH" ]; then
   echo "llama-server binary not found or not executable:"
@@ -61,6 +62,7 @@ CMD=(
   --top-k "$TOP_K"
   -t "$THREADS"
   --flash-attn "$FLASH_ATTN"
+  --reasoning "$REASONING"
 )
 
 if [ "$JINJA" = "1" ]; then
