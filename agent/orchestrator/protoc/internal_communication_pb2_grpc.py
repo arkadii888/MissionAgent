@@ -38,12 +38,34 @@ class InternalServiceStub(object):
                 request_serializer=internal__communication__pb2.Empty.SerializeToString,
                 response_deserializer=internal__communication__pb2.TelemetryResponse.FromString,
                 _registered_method=True)
+        self.StartMission = channel.unary_unary(
+                '/InternalService/StartMission',
+                request_serializer=internal__communication__pb2.MissionItemList.SerializeToString,
+                response_deserializer=internal__communication__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetPrompt = channel.unary_unary(
+                '/InternalService/GetPrompt',
+                request_serializer=internal__communication__pb2.Empty.SerializeToString,
+                response_deserializer=internal__communication__pb2.PromptResponse.FromString,
+                _registered_method=True)
 
 
 class InternalServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetTelemetry(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartMission(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPrompt(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -56,6 +78,16 @@ def add_InternalServiceServicer_to_server(servicer, server):
                     servicer.GetTelemetry,
                     request_deserializer=internal__communication__pb2.Empty.FromString,
                     response_serializer=internal__communication__pb2.TelemetryResponse.SerializeToString,
+            ),
+            'StartMission': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartMission,
+                    request_deserializer=internal__communication__pb2.MissionItemList.FromString,
+                    response_serializer=internal__communication__pb2.Empty.SerializeToString,
+            ),
+            'GetPrompt': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPrompt,
+                    request_deserializer=internal__communication__pb2.Empty.FromString,
+                    response_serializer=internal__communication__pb2.PromptResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -87,6 +119,61 @@ class InternalService(object):
             internal__communication__pb2.TelemetryResponse.FromString,
             options,
             channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartMission(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/InternalService/StartMission',
+            internal__communication__pb2.MissionItemList.SerializeToString,
+            internal__communication__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPrompt(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/InternalService/GetPrompt',
+            internal__communication__pb2.Empty.SerializeToString,
+            internal__communication__pb2.PromptResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
             call_credentials,
             compression,
             wait_for_ready,

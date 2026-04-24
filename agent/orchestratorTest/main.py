@@ -1,6 +1,6 @@
 import grpc
-import internal_communication_pb2
-import internal_communication_pb2_grpc
+import agent.orchestrator.protoc.internal_communication_pb2 as internal_communication_pb2
+import agent.orchestrator.protoc.internal_communication_pb2_grpc as internal_communication_pb2_grpc
 
 
 def run_mission_process():
