@@ -6,6 +6,10 @@ from typing import Any
 from agent.orchestrator.protoc import internal_communication_pb2
 
 
+_MIN_RELATIVE_ALTITUDE_M = 0.0
+_MAX_RELATIVE_ALTITUDE_M = 100.0
+
+
 def _nan() -> float:
     return float("nan")
 
@@ -56,6 +60,11 @@ def _normalize_yaw(yaw_deg: float) -> float:
     if yaw_deg > 360.0 or yaw_deg < -360.0:
         yaw_deg = math.fmod(yaw_deg, 360.0)
     return yaw_deg
+
+
+def _clamp_relative_altitude_m(relative_altitude_m: float) -> float:
+    """Clamp relative altitude to [0, 100] meters above ground."""
+    return min(max(relative_altitude_m, _MIN_RELATIVE_ALTITUDE_M), _MAX_RELATIVE_ALTITUDE_M)
 
 
 def _bearing_to_yaw_deg(north_m: float, east_m: float) -> float:
@@ -183,8 +192,8 @@ def _validate_mission_item(raw_item: Mapping[str, Any]) -> None:
         raise ValueError("latitude_deg must be in [-90, 90]")
     if not (-180.0 <= lon <= 180.0):
         raise ValueError("longitude_deg must be in [-180, 180]")
-    if not (0.0 <= rel_alt <= 120.0):
-        raise ValueError("relative_altitude_m must be in [0, 120]")
+    if not (_MIN_RELATIVE_ALTITUDE_M <= rel_alt <= _MAX_RELATIVE_ALTITUDE_M):
+        raise ValueError("relative_altitude_m must be in [0, 100]")
     if speed != 1.0:
         raise ValueError("speed_m_s must be 1.0")
     if loiter is not None and loiter < 0.0:
@@ -241,7 +250,7 @@ def mission_plan_to_proto(
     if not (-180.0 <= current_lon <= 180.0):
         raise ValueError("telemetry longitude_deg must be in [-180, 180]")
 
-    cruise_altitude_m = _as_float(items[0], "relative_altitude_m", 10.0)
+    cruise_altitude_m = _clamp_relative_altitude_m(_as_float(items[0], "relative_altitude_m", 10.0))
     if user_prompt:
         prompt_items = _build_items_from_prompt_geometry(
             user_prompt=user_prompt,
@@ -272,22 +281,26 @@ def mission_plan_to_proto(
     for raw_item in items:
         if not isinstance(raw_item, Mapping):
             raise ValueError("each mission item must be an object")
-        _validate_mission_item(raw_item)
+        sanitized_item = dict(raw_item)
+        sanitized_item["relative_altitude_m"] = _clamp_relative_altitude_m(
+            _as_float(raw_item, "relative_altitude_m", 10.0)
+        )
+        _validate_mission_item(sanitized_item)
 
-        lat = _as_float(raw_item, "latitude_deg", 0.0)
-        lon = _as_float(raw_item, "longitude_deg", 0.0)
+        lat = _as_float(sanitized_item, "latitude_deg", 0.0)
+        lon = _as_float(sanitized_item, "longitude_deg", 0.0)
         last_lat = lat
         last_lon = lon
         # Intermediate waypoints come from model geometry, but camera/speed are fixed.
         proto_item = _build_proto_item(
             latitude_deg=lat,
             longitude_deg=lon,
-            relative_altitude_m=_as_float(raw_item, "relative_altitude_m", 10.0),
+            relative_altitude_m=_as_float(sanitized_item, "relative_altitude_m", 10.0),
             speed_m_s=1.0,
             is_fly_through=False,
             vehicle_action=0,
             loiter_time_s=1.0,
-            yaw_deg=_normalize_yaw(_as_float(raw_item, "yaw_deg", 0.0)),
+            yaw_deg=_normalize_yaw(_as_float(sanitized_item, "yaw_deg", 0.0)),
         )
         result.items.append(proto_item)
 

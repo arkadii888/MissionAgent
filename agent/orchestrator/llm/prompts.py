@@ -14,6 +14,7 @@ def build_system_prompt(max_waypoints: int = 16) -> str:
         "Use this function for every computed waypoint coordinate from route reasoning: "
         "compute_lat_long_from_offset(base_latitude_deg, base_longitude_deg, north_offset_m, east_offset_m). "
         "Mission generation policy: camera_action must always be 0; speed_m_s must always be 1.0 for every item; "
+        "relative_altitude_m must always be between 0.0 and 100.0 meters where 0.0 means ground level; "
         "the orchestrator injects a deterministic first fly-up and final land item, "
         "so your items are only intermediate route endpoints."
     )

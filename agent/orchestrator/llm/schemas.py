@@ -30,7 +30,7 @@ MISSION_PLAN_SCHEMA: dict = {
                 "properties": {
                     "latitude_deg": {"type": "number"},
                     "longitude_deg": {"type": "number"},
-                    "relative_altitude_m": {"type": "number", "minimum": 0, "maximum": 120},
+                    "relative_altitude_m": {"type": "number", "minimum": 0, "maximum": 100},
                     "speed_m_s": {"type": "number", "const": 1.0},
                     "is_fly_through": {"type": "boolean"},
                     "loiter_time_s": {"type": "number", "minimum": 0},
