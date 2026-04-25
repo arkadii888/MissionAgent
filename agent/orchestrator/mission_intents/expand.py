@@ -7,10 +7,15 @@ from .basic import (
     handle_land,
     handle_loiter,
     handle_move,
+    handle_move_directional,
+    handle_move_vertical,
     handle_return_to_home,
+    handle_safety_control,
     handle_takeoff,
+    handle_turn_relative,
     handle_yaw,
 )
+from .area_patterns import handle_comb_square_area
 from .context import ExpansionContext
 from .proto import validate_proto_list
 from .registry import IntentRegistry
@@ -22,6 +27,11 @@ def build_default_registry() -> IntentRegistry:
     registry = IntentRegistry()
     registry.register("takeoff", handle_takeoff)
     registry.register("move", handle_move)
+    registry.register("move_directional", handle_move_directional)
+    registry.register("move_vertical", handle_move_vertical)
+    registry.register("turn_relative", handle_turn_relative)
+    registry.register("safety_control", handle_safety_control)
+    registry.register("comb_square_area", handle_comb_square_area)
     registry.register("loiter", handle_loiter)
     registry.register("yaw", handle_yaw)
     registry.register("return_to_home", handle_return_to_home)
@@ -78,6 +88,8 @@ def expand_intents_to_mission(
         intent_type = str(intent.get("type", "")).strip()
         if not intent_type:
             raise ValueError("intent.type must be a non-empty string")
+        if ctx.preempted and intent_type not in {"land", "safety_control"}:
+            continue
         if on_handler_called is not None:
             on_handler_called(intent_type, intent)
         handler = chosen_registry.resolve(intent_type)

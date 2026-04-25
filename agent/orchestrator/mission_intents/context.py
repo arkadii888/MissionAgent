@@ -11,4 +11,5 @@ class ExpansionContext:
     east_total_m: float = 0.0
     current_altitude_m: float = 0.0
     pending_yaw_deg: float | None = None
+    preempted: bool = False
     items: list[internal_communication_pb2.MissionItem] = field(default_factory=list)

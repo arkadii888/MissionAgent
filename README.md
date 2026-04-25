@@ -122,10 +122,20 @@ Naming conventions used in this repository for this flow:
 | --- | --- | --- | --- |
 | `takeoff` | `altitude_m` | Adds a takeoff waypoint at telemetry origin with target relative altitude. | `agent/orchestrator/mission_intents/basic.py` |
 | `move` | `north_m`, `east_m`, `up_m` | Updates cumulative north/east/altitude offsets and appends a fly-through waypoint with computed lat/lon. | `agent/orchestrator/mission_intents/basic.py` |
+| `move_directional` | `direction` (`north/south/east/west/northeast/northwest/southeast/southwest`) | World-frame directional move. Supports compass synonyms and optional `distance_m` (default `10`). | `agent/orchestrator/mission_intents/basic.py` |
+| `move_vertical` | `direction` (`down`) | Vertical descend move. Supports descend/down synonyms and optional `distance_m` (default `5`). | `agent/orchestrator/mission_intents/basic.py` |
+| `turn_relative` | none (`type` only) | Turn-around behavior only in phase 1 (180 degrees). Emits a waypoint with updated yaw. | `agent/orchestrator/mission_intents/basic.py` |
+| `safety_control` | `action` (`stop/hold/abort/return_home`) | Safety primitive; marks mission as preempted so subsequent movement/sweep intents are skipped (except `land`). | `agent/orchestrator/mission_intents/basic.py` |
+| `comb_square_area` | none (`type` only) | Deterministic square comb/sweep pattern with optional `side_m`, `lane_spacing_m`, `altitude_m`, `start_corner`. | `agent/orchestrator/mission_intents/area_patterns.py` |
 | `loiter` | `seconds` | Sets loiter duration on the latest waypoint (or creates a stationary waypoint if needed). | `agent/orchestrator/mission_intents/basic.py` |
 | `yaw` | `degrees` | Stores yaw to apply to the next emitted waypoint. | `agent/orchestrator/mission_intents/basic.py` |
 | `return_to_home` | none (`type` only) | Resets cumulative horizontal offsets to origin and appends return waypoint. | `agent/orchestrator/mission_intents/basic.py` |
 | `land` | none (`type` only) | Appends final landing waypoint (`vehicle_action=2`). | `agent/orchestrator/mission_intents/basic.py` |
+
+Phase-1 constraints:
+- World-frame compass movement only (no drone-relative `forward/backward/left/right` parsing).
+- `turn_relative` is intentionally limited to turn-around (180) semantics.
+- `safety_control` acts as a preemption barrier for later movement/sweep intents.
 
 ### Mission-item defaults used during conversion
 
@@ -151,12 +161,6 @@ Validation contract enforced before upload:
 - `speed_m_s == 1.0`
 - `camera_action == 0`
 - `vehicle_action in {0,1,2,3,4}`
-
-Scaffolded but not active yet:
-
-| Intent type | Status | Notes | Placeholder |
-| --- | --- | --- | --- |
-| `comb_square_area` | scaffolded | Handler placeholder exists but raises `NotImplementedError` until schema branch, registration, and tests are added. | `agent/orchestrator/mission_intents/area_patterns.py` |
 
 ### Run loop with local test mode
 
@@ -234,7 +238,7 @@ uv run pytest -q agent/tests/test_llama_client_integration.py
 
 ## Add a new mission intent
 
-To add an intent such as `comb_square_area`:
+To add a new intent:
 
 1. Add a new `oneOf` schema branch in `agent/orchestrator/llm/schemas.py`.
 2. Add a handler in `agent/orchestrator/mission_intents/` (for example `area_patterns.py`).
