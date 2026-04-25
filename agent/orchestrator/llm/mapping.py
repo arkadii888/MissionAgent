@@ -77,34 +77,63 @@ def _bearing_to_yaw_deg(north_m: float, east_m: float) -> float:
     return _normalize_yaw(yaw)
 
 
-def _extract_prompt_segments(user_prompt: str) -> tuple[list[tuple[float, float]], bool]:
+def _extract_prompt_segments(user_prompt: str) -> tuple[list[tuple[float, float, float]], bool]:
     """
     Extract sequential movement segments from user prompt as N/E offsets in meters.
     Returns (segments, should_return_to_takeoff).
     """
-    pattern = re.compile(
+    pattern_distance_first = re.compile(
         r"\b(?:go|fly|move)\s+(\d+(?:\.\d+)?)\s*m(?:eters?)?\s*(?:to\s+the\s+)?"
-        r"(north|south|east|west)\b",
+        r"(north|south|east|west|up|down)\b",
         re.IGNORECASE,
     )
-    segments: list[tuple[float, float]] = []
-    for m in pattern.finditer(user_prompt):
+    pattern_direction_first = re.compile(
+        r"\b(?:go|fly|move)\s+(?:to\s+the\s+)?(north|south|east|west|up|down)\s+"
+        r"(\d+(?:\.\d+)?)\s*m(?:eters?)?\b",
+        re.IGNORECASE,
+    )
+    segments: list[tuple[float, float, float]] = []
+    for m in pattern_distance_first.finditer(user_prompt):
         dist_m = float(m.group(1))
         direction = m.group(2).lower()
         if direction == "north":
-            segments.append((dist_m, 0.0))
+            segments.append((dist_m, 0.0, 0.0))
         elif direction == "south":
-            segments.append((-dist_m, 0.0))
+            segments.append((-dist_m, 0.0, 0.0))
         elif direction == "east":
-            segments.append((0.0, dist_m))
+            segments.append((0.0, dist_m, 0.0))
         elif direction == "west":
-            segments.append((0.0, -dist_m))
+            segments.append((0.0, -dist_m, 0.0))
+        elif direction == "up":
+            segments.append((0.0, 0.0, dist_m))
+        elif direction == "down":
+            segments.append((0.0, 0.0, -dist_m))
+
+    if not segments:
+        for m in pattern_direction_first.finditer(user_prompt):
+            direction = m.group(1).lower()
+            dist_m = float(m.group(2))
+            if direction == "north":
+                segments.append((dist_m, 0.0, 0.0))
+            elif direction == "south":
+                segments.append((-dist_m, 0.0, 0.0))
+            elif direction == "east":
+                segments.append((0.0, dist_m, 0.0))
+            elif direction == "west":
+                segments.append((0.0, -dist_m, 0.0))
+            elif direction == "up":
+                segments.append((0.0, 0.0, dist_m))
+            elif direction == "down":
+                segments.append((0.0, 0.0, -dist_m))
 
     lower = user_prompt.lower()
     should_return = any(
         phrase in lower
         for phrase in (
             "come back",
+            "go back",
+            "fly back",
+            "turn around",
             "return to takeoff",
             "return to take off",
             "back to takeoff",
@@ -129,12 +158,14 @@ def _build_items_from_prompt_geometry(
     out: list[dict[str, float | int | bool]] = []
     north_total = 0.0
     east_total = 0.0
+    altitude_total = cruise_altitude_m
     prev_north = 0.0
     prev_east = 0.0
 
-    for dn, de in segments:
+    for dn, de, du in segments:
         north_total += dn
         east_total += de
+        altitude_total = _clamp_relative_altitude_m(altitude_total + du)
         lat, lon = compute_lat_long_from_offset(
             base_latitude_deg,
             base_longitude_deg,
@@ -146,7 +177,7 @@ def _build_items_from_prompt_geometry(
             {
                 "latitude_deg": lat,
                 "longitude_deg": lon,
-                "relative_altitude_m": cruise_altitude_m,
+                "relative_altitude_m": altitude_total,
                 "speed_m_s": 1.0,
                 "is_fly_through": True,
                 "loiter_time_s": 0.0,
@@ -164,7 +195,7 @@ def _build_items_from_prompt_geometry(
             {
                 "latitude_deg": base_latitude_deg,
                 "longitude_deg": base_longitude_deg,
-                "relative_altitude_m": cruise_altitude_m,
+                "relative_altitude_m": altitude_total,
                 "speed_m_s": 1.0,
                 "is_fly_through": True,
                 "loiter_time_s": 0.0,
@@ -259,25 +290,23 @@ def mission_plan_to_proto(
             cruise_altitude_m=cruise_altitude_m,
         )
         if prompt_items:
-            items = prompt_items
+            mutable_items: list[dict[str, Any]] = [dict(i) for i in items if isinstance(i, Mapping)]
+            geometry_targets = [
+                idx
+                for idx, raw in enumerate(mutable_items)
+                if _as_int(raw, "vehicle_action", 0) not in {1, 2}
+            ]
+            if not geometry_targets:
+                geometry_targets = list(range(len(mutable_items)))
+            for target_idx, geo in zip(geometry_targets, prompt_items):
+                mutable_items[target_idx]["latitude_deg"] = geo["latitude_deg"]
+                mutable_items[target_idx]["longitude_deg"] = geo["longitude_deg"]
+                mutable_items[target_idx]["relative_altitude_m"] = geo["relative_altitude_m"]
+                mutable_items[target_idx]["yaw_deg"] = geo["yaw_deg"]
+            if mutable_items:
+                items = mutable_items
 
     result = internal_communication_pb2.MissionItemList()
-    # Deterministic takeoff point: always first, independent from model output.
-    result.items.append(
-        _build_proto_item(
-            latitude_deg=current_lat,
-            longitude_deg=current_lon,
-            relative_altitude_m=10.0,
-            speed_m_s=1.0,
-            is_fly_through=False,
-            vehicle_action=1,
-            loiter_time_s=_nan(),
-            yaw_deg=0.0,
-        )
-    )
-
-    last_lat = current_lat
-    last_lon = current_lon
     for raw_item in items:
         if not isinstance(raw_item, Mapping):
             raise ValueError("each mission item must be an object")
@@ -289,34 +318,18 @@ def mission_plan_to_proto(
 
         lat = _as_float(sanitized_item, "latitude_deg", 0.0)
         lon = _as_float(sanitized_item, "longitude_deg", 0.0)
-        last_lat = lat
-        last_lon = lon
-        # Intermediate waypoints come from model geometry, but camera/speed are fixed.
+        # Mission items now come directly from model output (after validation/sanitization).
         proto_item = _build_proto_item(
             latitude_deg=lat,
             longitude_deg=lon,
             relative_altitude_m=_as_float(sanitized_item, "relative_altitude_m", 10.0),
             speed_m_s=1.0,
-            is_fly_through=False,
-            vehicle_action=0,
+            is_fly_through=bool(sanitized_item.get("is_fly_through", False)),
+            vehicle_action=_as_int(sanitized_item, "vehicle_action", 0),
             loiter_time_s=1.0,
             yaw_deg=_normalize_yaw(_as_float(sanitized_item, "yaw_deg", 0.0)),
         )
         result.items.append(proto_item)
-
-    # Deterministic final point: always land at last modeled coordinate.
-    result.items.append(
-        _build_proto_item(
-            latitude_deg=last_lat,
-            longitude_deg=last_lon,
-            relative_altitude_m=0.0,
-            speed_m_s=1.0,
-            is_fly_through=False,
-            vehicle_action=2,
-            loiter_time_s=_nan(),
-            yaw_deg=0.0,
-        )
-    )
 
     # Guard against accidental NaN-elimination refactors.
     if not math.isnan(result.items[0].gimbal_pitch_deg):
