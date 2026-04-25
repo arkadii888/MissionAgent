@@ -217,7 +217,7 @@ def _build_proto_item(
     proto_item.gimbal_pitch_deg = _nan()
     proto_item.gimbal_yaw_deg = _nan()
     proto_item.camera_action = 0
-    proto_item.loiter_time_s = loiter_time_s
+    proto_item.loiter_time_s = 1.0
     proto_item.camera_photo_interval_s = 0.1
     proto_item.acceptance_radius_m = 0.5
     proto_item.yaw_deg = yaw_deg
@@ -284,9 +284,9 @@ def mission_plan_to_proto(
             longitude_deg=lon,
             relative_altitude_m=_as_float(raw_item, "relative_altitude_m", 10.0),
             speed_m_s=1.0,
-            is_fly_through=bool(raw_item.get("is_fly_through", False)),
+            is_fly_through=False,
             vehicle_action=0,
-            loiter_time_s=_as_optional_float(raw_item, "loiter_time_s"),
+            loiter_time_s=1.0,
             yaw_deg=_normalize_yaw(_as_float(raw_item, "yaw_deg", 0.0)),
         )
         result.items.append(proto_item)
