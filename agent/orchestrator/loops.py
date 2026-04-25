@@ -3,9 +3,7 @@ Basic orchestrator loop for integration testing against a real gRPC server and l
 
 One asyncio task keeps ``TelemetryCache`` fresh. The main coroutine polls ``GetPrompt``; when
 the prompt string changes to a new non-empty value, it fetches cached telemetry, builds prompts,
-calls the LLM, maps JSON to ``MissionItemList``, and ``StartMission``. After upload, a second
-task optionally advances the mission waypoint index from horizontal distance to each waypoint
-(a rough stand-in until MAVLink mission progress is wired).
+calls the LLM, maps JSON to ``MissionItemList``, and ``StartMission``.
 """
 
 import asyncio
