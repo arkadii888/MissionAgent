@@ -11,12 +11,44 @@ def _nan() -> float:
 
 def _as_float(item: Mapping[str, Any], key: str, default: float) -> float:
     value = item.get(key, default)
-    return float(value)
+    out = float(value)
+    if not math.isfinite(out):
+        raise ValueError(f"{key} must be finite")
+    return out
 
 
 def _as_int(item: Mapping[str, Any], key: str, default: int) -> int:
     value = item.get(key, default)
     return int(value)
+
+
+def _validate_mission_item(raw_item: Mapping[str, Any]) -> None:
+    lat = _as_float(raw_item, "latitude_deg", 0.0)
+    lon = _as_float(raw_item, "longitude_deg", 0.0)
+    rel_alt = _as_float(raw_item, "relative_altitude_m", 10.0)
+    speed = _as_float(raw_item, "speed_m_s", 2.0)
+    loiter = _as_float(raw_item, "loiter_time_s", 0.0) if "loiter_time_s" in raw_item else None
+    yaw = _as_float(raw_item, "yaw_deg", 0.0) if "yaw_deg" in raw_item else None
+
+    camera_action = _as_int(raw_item, "camera_action", 0)
+    vehicle_action = _as_int(raw_item, "vehicle_action", 0)
+
+    if not (-90.0 <= lat <= 90.0):
+        raise ValueError("latitude_deg must be in [-90, 90]")
+    if not (-180.0 <= lon <= 180.0):
+        raise ValueError("longitude_deg must be in [-180, 180]")
+    if not (0.0 <= rel_alt <= 120.0):
+        raise ValueError("relative_altitude_m must be in [0, 120]")
+    if not (0.0 <= speed <= 15.0):
+        raise ValueError("speed_m_s must be in [0, 15]")
+    if loiter is not None and loiter < 0.0:
+        raise ValueError("loiter_time_s must be >= 0")
+    if yaw is not None and not (-360.0 <= yaw <= 360.0):
+        raise ValueError("yaw_deg must be in [-360, 360]")
+    if camera_action not in {0, 1, 2, 3, 4, 5, 6, 7}:
+        raise ValueError("camera_action must be in {0,1,2,3,4,5,6,7}")
+    if vehicle_action not in {0, 1, 2, 3, 4}:
+        raise ValueError("vehicle_action must be in {0,1,2,3,4}")
 
 
 def mission_plan_to_proto(mission_plan: Mapping[str, Any]) -> internal_communication_pb2.MissionItemList:
@@ -28,6 +60,7 @@ def mission_plan_to_proto(mission_plan: Mapping[str, Any]) -> internal_communica
     for raw_item in items:
         if not isinstance(raw_item, Mapping):
             raise ValueError("each mission item must be an object")
+        _validate_mission_item(raw_item)
 
         proto_item = internal_communication_pb2.MissionItem()
         proto_item.latitude_deg = _as_float(raw_item, "latitude_deg", 0.0)

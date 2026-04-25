@@ -86,7 +86,9 @@ async def run_mission_test_loop() -> None:
     cache = TelemetryCache()
     mission = MissionState()
     stop = asyncio.Event()
-    last_processed_prompt: str | None = None
+    # Deduplicate by prompt text so each unique controller prompt is attempted once.
+    # This avoids hot retry loops when one prompt deterministically fails in LLM/map/gRPC.
+    last_seen_prompt: str | None = None
 
     log.info(
         "Starting mission test loop: grpc=%s llama=%s prompt_poll=%.2fs",
@@ -110,9 +112,10 @@ async def run_mission_test_loop() -> None:
                     continue
 
                 text = (pr.prompt or "").strip()
-                if not text or text == last_processed_prompt:
+                if not text or text == last_seen_prompt:
                     await asyncio.sleep(prompt_interval)
                     continue
+                last_seen_prompt = text
 
                 log.info("New prompt: %r", text[:200] + ("..." if len(text) > 200 else ""))
 
@@ -180,7 +183,6 @@ async def run_mission_test_loop() -> None:
                     continue
 
                 await mission.set_mission(name, proto)
-                last_processed_prompt = text
                 log.info("Uploaded mission %r (%d items).", name, len(proto.items))
 
         except (asyncio.CancelledError, KeyboardInterrupt):

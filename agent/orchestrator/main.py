@@ -20,8 +20,8 @@ async def get_telemetry() -> None:
         try:
             response = await client.get_telemetry()
             print("Data:")
-            print(f"Latitude: {response.current_latitude}")
-            print(f"Longitude: {response.current_longitude}")
+            print(f"Latitude: {response.latitude_deg}")
+            print(f"Longitude: {response.longitude_deg}")
         except grpc.RpcError as e:
             print(f"Error: {e.code()}")
 
