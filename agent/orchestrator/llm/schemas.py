@@ -1,46 +1,91 @@
-MISSION_PLAN_SCHEMA_NAME = "MissionPlan"
+MISSION_INTENT_SCHEMA_NAME = "MissionIntentPlan"
 
-# Subset of MissionItem fields expected from the LLM.
-# Any omitted fields are populated with safe defaults in mapping.py.
-MISSION_PLAN_SCHEMA: dict = {
+# Mission Intent DSL schema.
+# LLM emits mission intents; Python deterministically expands them to MissionItem protobuf.
+MISSION_INTENT_SCHEMA: dict = {
     "type": "object",
-    "required": ["mission_name", "items"],
+    "required": ["mission_name", "intents"],
     "properties": {
         "mission_name": {
             "type": "string",
             "maxLength": 64,
         },
-        "items": {
+        "intents": {
             "type": "array",
             "minItems": 1,
             "maxItems": 16,
             "items": {
                 "type": "object",
-                "required": [
-                    "latitude_deg",
-                    "longitude_deg",
-                    "relative_altitude_m",
-                    "speed_m_s",
-                    "is_fly_through",
-                    "loiter_time_s",
-                    "yaw_deg",
-                    "camera_action",
-                    "vehicle_action",
-                ],
+                "required": ["type"],
                 "properties": {
-                    "latitude_deg": {"type": "number"},
-                    "longitude_deg": {"type": "number"},
-                    "relative_altitude_m": {"type": "number", "minimum": 0, "maximum": 100},
-                    "speed_m_s": {"type": "number", "const": 1.0},
-                    "is_fly_through": {"type": "boolean"},
-                    "loiter_time_s": {"type": "number", "minimum": 0},
-                    "yaw_deg": {"type": "number"},
-                    "camera_action": {"type": "integer", "const": 0},
-                    "vehicle_action": {"type": "integer", "enum": [0, 1, 2, 3, 4]},
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "takeoff",
+                            "move",
+                            "loiter",
+                            "yaw",
+                            "return_to_home",
+                            "land",
+                        ],
+                    },
                 },
-                "additionalProperties": False,
+                "oneOf": [
+                    {
+                        "required": ["type", "altitude_m"],
+                        "properties": {
+                            "type": {"const": "takeoff"},
+                            "altitude_m": {"type": "number", "minimum": 0, "maximum": 100},
+                        },
+                        "additionalProperties": False,
+                    },
+                    {
+                        "required": ["type", "north_m", "east_m", "up_m"],
+                        "properties": {
+                            "type": {"const": "move"},
+                            "north_m": {"type": "number", "minimum": -1000, "maximum": 1000},
+                            "east_m": {"type": "number", "minimum": -1000, "maximum": 1000},
+                            "up_m": {"type": "number", "minimum": -100, "maximum": 100},
+                        },
+                        "additionalProperties": False,
+                    },
+                    {
+                        "required": ["type", "seconds"],
+                        "properties": {
+                            "type": {"const": "loiter"},
+                            "seconds": {"type": "number", "minimum": 0, "maximum": 300},
+                        },
+                        "additionalProperties": False,
+                    },
+                    {
+                        "required": ["type", "degrees"],
+                        "properties": {
+                            "type": {"const": "yaw"},
+                            "degrees": {"type": "number", "minimum": -360, "maximum": 360},
+                        },
+                        "additionalProperties": False,
+                    },
+                    {
+                        "required": ["type"],
+                        "properties": {
+                            "type": {"const": "return_to_home"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    {
+                        "required": ["type"],
+                        "properties": {
+                            "type": {"const": "land"},
+                        },
+                        "additionalProperties": False,
+                    },
+                ],
             },
         },
     },
     "additionalProperties": False,
 }
+
+# Backwards-compatible aliases for any external imports still using older names.
+MISSION_PLAN_SCHEMA_NAME = MISSION_INTENT_SCHEMA_NAME
+MISSION_PLAN_SCHEMA = MISSION_INTENT_SCHEMA

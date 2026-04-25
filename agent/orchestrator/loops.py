@@ -3,7 +3,8 @@ Basic orchestrator loop for integration testing against a real gRPC server and l
 
 One asyncio task keeps ``TelemetryCache`` fresh. The main coroutine polls ``GetPrompt``; when
 the prompt string changes to a new non-empty value, it fetches cached telemetry, builds prompts,
-calls the LLM, maps JSON to ``MissionItemList``, and ``StartMission``.
+calls the LLM for mission intents, expands intents into ``MissionItemList``, and calls
+``StartMission``.
 """
 
 import asyncio
@@ -12,20 +13,21 @@ import json
 import logging
 import os
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
-
-from google.protobuf.json_format import MessageToJson
 
 from agent.orchestrator.config import Settings
 from agent.orchestrator.grpc_client import InternalGrpcClient
 from agent.orchestrator.llm.client import LlamaClient
-from agent.orchestrator.llm.mapping import mission_plan_to_proto
 from agent.orchestrator.llm.prompts import build_system_prompt, build_user_prompt
+from agent.orchestrator.logging import JsonPipelineLogger
+from agent.orchestrator.mission_intents import expand_intents_to_mission
+from agent.orchestrator.mission_intents.proto import mission_list_to_ordered_dict
 from agent.orchestrator.state import MissionState, TelemetryCache
 
 log = logging.getLogger(__name__)
 
-# How often to poll C++ for a new user prompt (seconds between GetPrompt calls).
+# Default prompt polling interval in seconds.
 _DEFAULT_PROMPT_POLL_S = 1
 _LOCAL_TEST_TELEMETRY_DEFAULTS: dict[str, float] = {
     "latitude_deg": 47.3977419,
@@ -43,7 +45,7 @@ def _load_settings() -> Settings:
     if out.llama_cpp_url is None:
         out = replace(out, llama_cpp_url="http://127.0.0.1:8080")
     if out.model_name is None:
-        out = replace(out, model_name="gemma")
+        out = replace(out, model_name="gemma-4-e2b")
     return out
 
 
@@ -74,7 +76,9 @@ async def _plan_from_prompt(
     settings: Settings,
     prompt_text: str,
     telemetry_map: dict[str, Any],
-) -> tuple[str, Any] | None:
+    json_logger: JsonPipelineLogger,
+    trace_id: str,
+) -> tuple[str, Any, str] | None:
     status_line = await mission.prompt_mission_status()
     await mission.begin_planning()
     system = build_system_prompt(max_waypoints=settings.max_waypoints)
@@ -90,23 +94,66 @@ async def _plan_from_prompt(
         plan_dict: dict[str, Any] = await llm.plan_mission(system, user)
     except Exception as exc:
         log.exception("LLM plan_mission failed: %s", exc)
+        json_logger.log(
+            "mission_upload_failed",
+            trace_id,
+            {"stage": "llm_plan", "error": str(exc)},
+        )
         await mission.mark_error(f"llm: {exc}")
         return None
 
+    json_logger.log(
+        "intents_generated",
+        trace_id,
+        {"mission_plan": plan_dict},
+    )
     log.info(
-        "LLM parsed mission plan (dict after JSON parse):\n%s",
+        "LLM parsed mission intent plan (dict after JSON parse):\n%s",
         json.dumps(plan_dict, indent=2, ensure_ascii=False),
     )
 
     try:
-        proto = mission_plan_to_proto(plan_dict, telemetry_map, prompt_text)
+        called_handlers: list[dict[str, Any]] = []
+
+        def _on_handler_called(intent_type: str, intent_payload: dict[str, Any]) -> None:
+            called_handlers.append(
+                {
+                    "intent_type": intent_type,
+                    "handler_input": dict(intent_payload),
+                }
+            )
+            json_logger.log(
+                "intent_handler_called",
+                trace_id,
+                {"intent_type": intent_type, "intent": dict(intent_payload)},
+            )
+
+        proto = expand_intents_to_mission(
+            plan_dict,
+            telemetry_map,
+            on_handler_called=_on_handler_called,
+        )
+        json_logger.log(
+            "mission_converted",
+            trace_id,
+            {
+                "mission_plan": plan_dict,
+                "called_handlers": called_handlers,
+                "mission_proto": mission_list_to_ordered_dict(proto),
+            },
+        )
     except Exception as exc:
-        log.exception("mission_plan_to_proto: %s", exc)
+        log.exception("expand_intents_to_mission: %s", exc)
+        json_logger.log(
+            "mission_upload_failed",
+            trace_id,
+            {"stage": "intent_expansion", "error": str(exc), "mission_plan": plan_dict},
+        )
         await mission.mark_error(f"map: {exc}")
         return None
 
     name = str(plan_dict.get("mission_name", "mission"))[:64]
-    return name, proto
+    return name, proto, trace_id
 
 
 async def _telemetry_poll_loop(
@@ -152,9 +199,13 @@ async def run_mission_test_loop() -> None:
     cache = TelemetryCache()
     mission = MissionState()
     stop = asyncio.Event()
+    json_logger = JsonPipelineLogger(
+        path=Path(settings.mission_json_log_path),
+        enabled=settings.mission_json_log_enabled,
+    )
     local_test_mode = _env_flag("LOCAL_TEST_MODE")
-    # Deduplicate by prompt text so each unique controller prompt is attempted once.
-    # This avoids hot retry loops when one prompt deterministically fails in LLM/map/gRPC.
+    # Process each unique prompt once per run to avoid hot retry loops when one prompt
+    # deterministically fails in LLM expansion or gRPC upload.
     last_seen_prompt: str | None = None
 
     log.info(
@@ -191,6 +242,12 @@ async def run_mission_test_loop() -> None:
                 "LOCAL_TEST_MODE prompt: %r",
                 prompt_text[:200] + ("..." if len(prompt_text) > 200 else ""),
             )
+            trace_id = json_logger.new_trace_id()
+            json_logger.log(
+                "prompt_received",
+                trace_id,
+                {"prompt_text": prompt_text, "telemetry": telemetry_map},
+            )
 
             planned = await _plan_from_prompt(
                 llm=llm,
@@ -198,11 +255,13 @@ async def run_mission_test_loop() -> None:
                 settings=settings,
                 prompt_text=prompt_text,
                 telemetry_map=telemetry_map,
+                json_logger=json_logger,
+                trace_id=trace_id,
             )
             if planned is None:
                 continue
 
-            name, proto = planned
+            name, proto, planned_trace_id = planned
             await mission.set_mission(name, proto)
             log.info(
                 "LOCAL_TEST_MODE planned mission %r (%d items). No StartMission gRPC call made.",
@@ -210,12 +269,13 @@ async def run_mission_test_loop() -> None:
                 len(proto.items),
             )
             log.info(
-                "LOCAL_TEST_MODE mission payload (JSON view):\n%s",
-                MessageToJson(
-                    proto,
-                    preserving_proto_field_name=True,
-                    always_print_fields_with_no_presence=True,
-                ),
+                "LOCAL_TEST_MODE mission payload (ordered dict):\n%s",
+                json.dumps(mission_list_to_ordered_dict(proto), indent=2, ensure_ascii=False),
+            )
+            json_logger.log(
+                "mission_uploaded",
+                planned_trace_id,
+                {"local_test_mode": True, "mission_name": name, "item_count": len(proto.items)},
             )
         return
 
@@ -241,7 +301,7 @@ async def run_mission_test_loop() -> None:
 
                 log.info("New prompt: %r", text[:200] + ("..." if len(text) > 200 else ""))
 
-                # Fresh telemetry for planning
+                # Refresh telemetry before planning so expansion uses the latest origin.
                 try:
                     tel = await client.get_telemetry()
                     await cache.update_from_telemetry(tel)
@@ -252,37 +312,51 @@ async def run_mission_test_loop() -> None:
                     continue
 
                 tel_map = await cache.as_any()
+                trace_id = json_logger.new_trace_id()
+                json_logger.log(
+                    "prompt_received",
+                    trace_id,
+                    {"prompt_text": text, "telemetry": tel_map},
+                )
                 planned = await _plan_from_prompt(
                     llm=llm,
                     mission=mission,
                     settings=settings,
                     prompt_text=text,
                     telemetry_map=tel_map,
+                    json_logger=json_logger,
+                    trace_id=trace_id,
                 )
                 if planned is None:
                     await asyncio.sleep(prompt_interval)
                     continue
-                name, proto = planned
+                name, proto, planned_trace_id = planned
 
                 log.info(
-                    "gRPC StartMission payload (JSON view):\n%s",
-                    MessageToJson(
-                        proto,
-                        preserving_proto_field_name=True,
-                        always_print_fields_with_no_presence=True,
-                    ),
+                    "gRPC StartMission payload (ordered dict):\n%s",
+                    json.dumps(mission_list_to_ordered_dict(proto), indent=2, ensure_ascii=False),
                 )
 
                 try:
                     await client.start_mission(proto)
                 except Exception as exc:
                     log.exception("StartMission failed: %s", exc)
+                    json_logger.log(
+                        "mission_upload_failed",
+                        planned_trace_id,
+                        {"stage": "start_mission_rpc", "error": str(exc)},
+                    )
                     await mission.mark_error(f"grpc: {exc}")
                     await asyncio.sleep(prompt_interval)
                     continue
 
                 await mission.set_mission(name, proto)
                 log.info("Uploaded mission %r (%d items).", name, len(proto.items))
+                json_logger.log(
+                    "mission_uploaded",
+                    planned_trace_id,
+                    {"local_test_mode": False, "mission_name": name, "item_count": len(proto.items)},
+                )
 
         except (asyncio.CancelledError, KeyboardInterrupt):
             log.info("Shutting down...")

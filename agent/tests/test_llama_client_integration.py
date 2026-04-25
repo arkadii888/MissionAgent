@@ -43,7 +43,7 @@ def _chat_endpoint_available(base_url: str) -> bool:
 @pytest.mark.asyncio
 async def test_llama_client_can_send_and_receive():
     base_url = os.getenv("LLAMA_CPP_URL", "http://127.0.0.1:8080")
-    model_name = os.getenv("MODEL_NAME", "gemma")
+    model_name = os.getenv("MODEL_NAME", "gemma-4-e2b")
     if not _server_is_up(base_url):
         pytest.skip(f"llama.cpp server not running at {base_url}")
     if not _chat_endpoint_available(base_url):
@@ -71,9 +71,9 @@ async def test_llama_client_can_send_and_receive():
         plan = await client.plan_mission(system_prompt, user_prompt)
         assert isinstance(plan, dict)
         assert "mission_name" in plan
-        assert "items" in plan
-        assert isinstance(plan["items"], list)
-        assert len(plan["items"]) >= 1
+        assert "intents" in plan
+        assert isinstance(plan["intents"], list)
+        assert len(plan["intents"]) >= 1
     except (ValueError, json.JSONDecodeError, RuntimeError):
         # Fallback assertion: endpoint is reachable and returns model output,
         # even when this llama.cpp build does not strictly enforce JSON schema.

@@ -3,25 +3,14 @@ from collections.abc import Mapping
 
 def build_system_prompt(max_waypoints: int = 16) -> str:
     return (
-        "You are a drone mission planner. "
+        "You are Gemma 4 E2B, a drone mission intent planner. "
         "Return only valid JSON that matches the provided schema. "
-        f"Create at most {max_waypoints} mission items. "
-        "Mission constraints: vehicle_action values are "
-        "0=None, 1=Takeoff, 2=Land, 3=TransitionToFw, 4=TransitionToMc. "
-        "camera_action values are "
-        "0=None, 1=TakePhoto, 2=StartPhotoInterval, 3=StopPhotoInterval, "
-        "4=StartVideo, 5=StopVideo, 6=StartPhotoDistance, 7=StopPhotoDistance. "
-        "Mission generation policy: camera_action must always be 0; speed_m_s must always be 1.0; "
-        "relative_altitude_m must be in [0.0, 100.0] where 0.0 is ground level; "
-        "is_fly_through must be false; loiter_time_s must be 1.0; yaw_deg must be in [-360, 360]. "
-        "You must plan the full mission sequence end-to-end in your output, including takeoff/landing "
-        "when required, by using vehicle_action values directly in mission items. "
-        "Waypoint geometry rules: parse the user request into ordered movement steps; "
-        "for horizontal movement, compute new coordinates from telemetry origin and cumulative offsets using "
-        "compute_lat_long_from_offset(base_latitude_deg, base_longitude_deg, north_offset_m, east_offset_m). "
-        "For vertical-only movement (up/down), keep latitude_deg and longitude_deg unchanged and change only relative_altitude_m. "
-        "If user says return/fly back/come back, include a waypoint at the original telemetry latitude_deg and longitude_deg. "
-        "Do not keep all waypoints at identical coordinates when horizontal movement is requested."
+        f"Create at most {max_waypoints} intents. "
+        "Do not compute latitude/longitude. "
+        "Use only these intent types: takeoff, move, loiter, yaw, return_to_home, land. "
+        "Use metric distances in meters and yaw in degrees. "
+        "Prefer complete missions: include takeoff first and land last unless the user explicitly asks otherwise. "
+        "Keep values realistic and concise."
     )
 
 
@@ -37,12 +26,18 @@ def build_user_prompt(
         f"- longitude_deg: {telemetry.get('longitude_deg')}\n"
         f"- relative_altitude_m: {telemetry.get('relative_altitude_m')}\n"
         f"- absolute_altitude_m: {telemetry.get('absolute_altitude_m')}\n"
-        "Planning checklist:\n"
-        "1) Extract movement steps in order (north/south/east/west/up/down/return).\n"
-        "2) Convert horizontal steps into cumulative north/east offsets.\n"
-        "3) Compute each waypoint lat/lon from telemetry origin and offsets.\n"
-        "4) Keep lat/lon unchanged for vertical-only steps.\n"
-        "5) Output only JSON matching schema (no markdown, no comments).\n"
+        "Intent checklist:\n"
+        "1) Convert the user request into an ordered list of mission intents.\n"
+        "2) Use move intent with north_m/east_m/up_m for directional movement.\n"
+        "3) Use return_to_home when user asks to come back/return.\n"
+        "4) Output only JSON matching schema (no markdown, no comments).\n"
+        "Examples:\n"
+        '- Input: "Fly up 10m, then go north 20m and land."\n'
+        '- Output: {"mission_name":"up and north","intents":[{"type":"takeoff","altitude_m":10},{"type":"move","north_m":0,"east_m":0,"up_m":10},{"type":"move","north_m":20,"east_m":0,"up_m":0},{"type":"land"}]}\n'
+        '- Input: "Take off to 15m, fly east 30m, come back, then land."\n'
+        '- Output: {"mission_name":"east and return","intents":[{"type":"takeoff","altitude_m":15},{"type":"move","north_m":0,"east_m":30,"up_m":0},{"type":"return_to_home"},{"type":"land"}]}\n'
+        '- Input: "Take off to 10m, yaw 90 degrees, hover 5 seconds, land."\n'
+        '- Output: {"mission_name":"yaw and loiter","intents":[{"type":"takeoff","altitude_m":10},{"type":"yaw","degrees":90},{"type":"loiter","seconds":5},{"type":"land"}]}\n'
         f"Mission status: {mission_status}\n"
-        "Generate a mission plan now."
+        "Generate mission intents now."
     )

@@ -13,6 +13,8 @@ class Settings:
     llm_max_tokens: int
     llm_temperature: float
     max_waypoints: int
+    mission_json_log_enabled: bool
+    mission_json_log_path: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -26,4 +28,7 @@ class Settings:
             llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512")),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
             max_waypoints=int(os.getenv("MAX_WAYPOINTS", "16")),
+            mission_json_log_enabled=os.getenv("MISSION_JSON_LOG_ENABLED", "1").strip().lower()
+            in {"1", "true", "yes", "on"},
+            mission_json_log_path=os.getenv("MISSION_JSON_LOG_PATH", "agent/logs/mission_pipeline.jsonl"),
         )

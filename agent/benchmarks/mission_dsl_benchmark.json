@@ -1,0 +1,315 @@
+{
+  "summary": {
+    "total": 40,
+    "parse_rate": 0.925,
+    "structure_rate": 0.925,
+    "geometry_checks": 27,
+    "geometry_rate": 0.8888888888888888
+  },
+  "rows": [
+    {
+      "idx": 1,
+      "prompt": "Fly up 10m and land.",
+      "intent_count": 2,
+      "items": 2,
+      "ok": true
+    },
+    {
+      "idx": 2,
+      "prompt": "Take off to 15m and land.",
+      "intent_count": 2,
+      "items": 2,
+      "ok": true
+    },
+    {
+      "idx": 3,
+      "prompt": "Fly north 10m and land.",
+      "intent_count": 3,
+      "items": 3,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 4,
+      "prompt": "Fly east 12m and land.",
+      "intent_count": 3,
+      "items": 3,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 5,
+      "prompt": "Go south 8m then land.",
+      "ok": false,
+      "error": "Expecting property name enclosed in double quotes: line 1 column 29 (char 28)"
+    },
+    {
+      "idx": 6,
+      "prompt": "Move west 20m and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 7,
+      "prompt": "Fly up 5m, go north 5m, land.",
+      "intent_count": 3,
+      "items": 3,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 8,
+      "prompt": "Go north 10m then south 10m and land.",
+      "intent_count": 4,
+      "items": 4,
+      "ok": true
+    },
+    {
+      "idx": 9,
+      "prompt": "Hover for 5 seconds then land.",
+      "intent_count": 3,
+      "items": 2,
+      "ok": true
+    },
+    {
+      "idx": 10,
+      "prompt": "Take off, yaw 90 degrees, land.",
+      "intent_count": 3,
+      "items": 2,
+      "ok": true
+    },
+    {
+      "idx": 11,
+      "prompt": "Fly up 10m, then go north 10m, return and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 12,
+      "prompt": "Take off to 20m, fly east 30m, come back and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 13,
+      "prompt": "Go north 15m then east 10m then return and land.",
+      "intent_count": 5,
+      "items": 5,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 14,
+      "prompt": "Fly west 25m and return to takeoff before landing.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 15,
+      "prompt": "Up 12m, north 15m, south 15m, land.",
+      "intent_count": 4,
+      "items": 4,
+      "ok": true
+    },
+    {
+      "idx": 16,
+      "prompt": "Take off, move north 20m, yaw 180, return and land.",
+      "intent_count": 5,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 17,
+      "prompt": "Go east 40m, loiter 3 seconds, come back, land.",
+      "intent_count": 5,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 18,
+      "prompt": "Move north 10m, east 10m, south 10m, west 10m, land.",
+      "intent_count": 6,
+      "items": 6,
+      "ok": true
+    },
+    {
+      "idx": 19,
+      "prompt": "Fly north 30m then return and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 20,
+      "prompt": "Go up 8m, east 12m, return to home, land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 21,
+      "prompt": "Please do a short inspection north of me and come back to land.",
+      "ok": false,
+      "error": "Expecting ',' delimiter: line 7 column 21 (char 122)"
+    },
+    {
+      "idx": 22,
+      "prompt": "Take a quick lap to the east and return.",
+      "intent_count": 5,
+      "items": 5,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 23,
+      "prompt": "Climb a bit, look around, then return and land.",
+      "intent_count": 4,
+      "items": 3,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 24,
+      "prompt": "Do a simple test flight and land safely.",
+      "intent_count": 3,
+      "items": 3,
+      "ok": true
+    },
+    {
+      "idx": 25,
+      "prompt": "Fly a little north then back and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 26,
+      "prompt": "Move around me carefully and come home.",
+      "ok": false,
+      "error": "Extra data: line 1 column 2 (char 1)"
+    },
+    {
+      "idx": 27,
+      "prompt": "Short demo mission: up, forward, back, land.",
+      "intent_count": 5,
+      "items": 5,
+      "geo_ok": false,
+      "ok": true
+    },
+    {
+      "idx": 28,
+      "prompt": "Head east a little, hover, and return.",
+      "intent_count": 5,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 29,
+      "prompt": "Take off and perform a tiny patrol then land.",
+      "intent_count": 5,
+      "items": 4,
+      "ok": true
+    },
+    {
+      "idx": 30,
+      "prompt": "Quick out-and-back mission north.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 31,
+      "prompt": "Rise to ten meters, proceed north ten meters, then return home and descend.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 32,
+      "prompt": "Ascend 6m, travel east 14m, pause, and fly back before landing.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 33,
+      "prompt": "Go north for 12 meters and keep altitude, then land at home.",
+      "intent_count": 3,
+      "items": 3,
+      "geo_ok": false,
+      "ok": true
+    },
+    {
+      "idx": 34,
+      "prompt": "Takeoff to 9m, yaw right 90 deg, loiter 2 sec, land.",
+      "intent_count": 4,
+      "items": 2,
+      "ok": true
+    },
+    {
+      "idx": 35,
+      "prompt": "Advance west 18m, reverse course to launch, land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 36,
+      "prompt": "Fly south 11m, then return to takeoff point and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 37,
+      "prompt": "Climb to 7m, move north 9m, move east 9m, return and land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 38,
+      "prompt": "Perform an out-and-back east 22 meters with landing.",
+      "intent_count": 3,
+      "items": 3,
+      "geo_ok": false,
+      "ok": true
+    },
+    {
+      "idx": 39,
+      "prompt": "Start mission: up 10, north 10, east 5, back to home, land.",
+      "intent_count": 4,
+      "items": 4,
+      "geo_ok": true,
+      "ok": true
+    },
+    {
+      "idx": 40,
+      "prompt": "Go 10m north, 10m east, 10m south, return to launch, land.",
+      "intent_count": 6,
+      "items": 6,
+      "geo_ok": true,
+      "ok": true
+    }
+  ]
+}

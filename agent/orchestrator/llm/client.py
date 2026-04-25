@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib import error, request
 
-from .schemas import MISSION_PLAN_SCHEMA, MISSION_PLAN_SCHEMA_NAME
+from .schemas import MISSION_INTENT_SCHEMA, MISSION_INTENT_SCHEMA_NAME
 
 log = logging.getLogger(__name__)
 
@@ -38,12 +38,12 @@ class LlamaClient:
                 {"role": "user", "content": user_prompt},
             ],
             # Keep both formats: different llama.cpp builds enforce one or the other.
-            "json_schema": MISSION_PLAN_SCHEMA,
+            "json_schema": MISSION_INTENT_SCHEMA,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": MISSION_PLAN_SCHEMA_NAME,
-                    "schema": MISSION_PLAN_SCHEMA,
+                    "name": MISSION_INTENT_SCHEMA_NAME,
+                    "schema": MISSION_INTENT_SCHEMA,
                 },
             },
             "max_tokens": self._max_tokens,
@@ -56,7 +56,7 @@ class LlamaClient:
             log.info("llama-server raw assistant content (first attempt):\n%s", content)
             parsed = self._parse_json_from_text(content)
             if not isinstance(parsed, Mapping):
-                raise ValueError("mission plan must be a JSON object")
+                raise ValueError("mission intent plan must be a JSON object")
             return dict(parsed)
         except (ValueError, json.JSONDecodeError):
             # Retry once with stronger output constraints for servers that ignore schema hints.
@@ -79,12 +79,14 @@ class LlamaClient:
             try:
                 retry_parsed = self._parse_json_from_text(retry_content)
                 if not isinstance(retry_parsed, Mapping):
-                    raise ValueError(f"mission plan must be a JSON object, got: {type(retry_parsed)}")
+                    raise ValueError(
+                        f"mission intent plan must be a JSON object, got: {type(retry_parsed)}"
+                    )
                 return dict(retry_parsed)
             except (ValueError, json.JSONDecodeError):
                 # Final retry with higher token budget and even stricter output instruction.
                 final_payload = dict(retry_payload)
-                final_payload["max_tokens"] = max(self._max_tokens * 2, 2048)
+                final_payload["max_tokens"] = max(self._max_tokens, 512)
                 final_payload["messages"] = [
                     {
                         "role": "system",
@@ -101,7 +103,9 @@ class LlamaClient:
                 log.info("llama-server raw assistant content (final retry):\n%s", final_content)
                 final_parsed = self._parse_json_from_text(final_content)
                 if not isinstance(final_parsed, Mapping):
-                    raise ValueError(f"mission plan must be a JSON object, got: {type(final_parsed)}")
+                    raise ValueError(
+                        f"mission intent plan must be a JSON object, got: {type(final_parsed)}"
+                    )
                 return dict(final_parsed)
 
     def _extract_content_text(self, response: Mapping[str, Any]) -> str:
