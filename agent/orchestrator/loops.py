@@ -154,7 +154,7 @@ async def run_mission_test_loop() -> None:
                 )
 
                 try:
-                    proto = mission_plan_to_proto(plan_dict)
+                    proto = mission_plan_to_proto(plan_dict, tel_map)
                 except Exception as exc:
                     log.exception("mission_plan_to_proto: %s", exc)
                     await mission.mark_error(f"map: {exc}")

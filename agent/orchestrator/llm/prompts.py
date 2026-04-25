@@ -11,7 +11,11 @@ def build_system_prompt(max_waypoints: int = 16) -> str:
         "camera_action values are "
         "0=None, 1=TakePhoto, 2=StartPhotoInterval, 3=StopPhotoInterval, "
         "4=StartVideo, 5=StopVideo, 6=StartPhotoDistance, 7=StopPhotoDistance. "
-        "Always create a safe mission with realistic waypoint geometry, include takeoff first, and land last."
+        "Use this function for every computed waypoint coordinate from route reasoning: "
+        "compute_lat_long_from_offset(base_latitude_deg, base_longitude_deg, north_offset_m, east_offset_m). "
+        "Mission generation policy: camera_action must always be 0; speed_m_s must always be 1.0 for every item; "
+        "the orchestrator injects a deterministic first fly-up and final land item, "
+        "so your items are only intermediate route endpoints."
     )
 
 
