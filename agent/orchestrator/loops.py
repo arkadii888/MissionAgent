@@ -27,6 +27,12 @@ log = logging.getLogger(__name__)
 
 # How often to poll C++ for a new user prompt (seconds between GetPrompt calls).
 _DEFAULT_PROMPT_POLL_S = 1
+_LOCAL_TEST_TELEMETRY_DEFAULTS: dict[str, float] = {
+    "latitude_deg": 47.3977419,
+    "longitude_deg": 8.5455938,
+    "relative_altitude_m": 0.0,
+    "absolute_altitude_m": 488.0,
+}
 
 
 def _load_settings() -> Settings:
@@ -39,6 +45,68 @@ def _load_settings() -> Settings:
     if out.model_name is None:
         out = replace(out, model_name="gemma")
     return out
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_local_test_telemetry() -> dict[str, float]:
+    out = dict(_LOCAL_TEST_TELEMETRY_DEFAULTS)
+    for key, default_value in _LOCAL_TEST_TELEMETRY_DEFAULTS.items():
+        raw = os.getenv(f"LOCAL_TEST_{key.upper()}")
+        if raw is None or not raw.strip():
+            continue
+        try:
+            out[key] = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"Invalid float for LOCAL_TEST_{key.upper()}: {raw!r}") from exc
+    return out
+
+
+async def _plan_from_prompt(
+    *,
+    llm: LlamaClient,
+    mission: MissionState,
+    settings: Settings,
+    prompt_text: str,
+    telemetry_map: dict[str, Any],
+) -> tuple[str, Any] | None:
+    status_line = await mission.prompt_mission_status()
+    await mission.begin_planning()
+    system = build_system_prompt(max_waypoints=settings.max_waypoints)
+    user = build_user_prompt(
+        user_prompt=prompt_text,
+        telemetry=telemetry_map,
+        mission_status=status_line,
+    )
+    log.info("LLM system prompt sent to llama-server:\n%s", system)
+    log.info("LLM user prompt sent to llama-server:\n%s", user)
+
+    try:
+        plan_dict: dict[str, Any] = await llm.plan_mission(system, user)
+    except Exception as exc:
+        log.exception("LLM plan_mission failed: %s", exc)
+        await mission.mark_error(f"llm: {exc}")
+        return None
+
+    log.info(
+        "LLM parsed mission plan (dict after JSON parse):\n%s",
+        json.dumps(plan_dict, indent=2, ensure_ascii=False),
+    )
+
+    try:
+        proto = mission_plan_to_proto(plan_dict, telemetry_map, prompt_text)
+    except Exception as exc:
+        log.exception("mission_plan_to_proto: %s", exc)
+        await mission.mark_error(f"map: {exc}")
+        return None
+
+    name = str(plan_dict.get("mission_name", "mission"))[:64]
+    return name, proto
 
 
 async def _telemetry_poll_loop(
@@ -84,16 +152,72 @@ async def run_mission_test_loop() -> None:
     cache = TelemetryCache()
     mission = MissionState()
     stop = asyncio.Event()
+    local_test_mode = _env_flag("LOCAL_TEST_MODE")
     # Deduplicate by prompt text so each unique controller prompt is attempted once.
     # This avoids hot retry loops when one prompt deterministically fails in LLM/map/gRPC.
     last_seen_prompt: str | None = None
 
     log.info(
-        "Starting mission test loop: grpc=%s llama=%s prompt_poll=%.2fs",
+        "Starting mission test loop: grpc=%s llama=%s prompt_poll=%.2fs local_test_mode=%s",
         settings.grpc_target,
         settings.llama_cpp_url,
         prompt_interval,
+        local_test_mode,
     )
+
+    if local_test_mode:
+        telemetry_map = _load_local_test_telemetry()
+        env_prompt = (os.getenv("LOCAL_TEST_PROMPT") or "").strip()
+        log.info(
+            "Running in LOCAL_TEST_MODE with fake telemetry lat=%.7f lon=%.7f rel_alt=%.2f abs_alt=%.2f",
+            telemetry_map["latitude_deg"],
+            telemetry_map["longitude_deg"],
+            telemetry_map["relative_altitude_m"],
+            telemetry_map["absolute_altitude_m"],
+        )
+        while True:
+            prompt_text = env_prompt
+            env_prompt = ""
+            if not prompt_text:
+                prompt_text = await asyncio.to_thread(
+                    input, "Mission prompt (empty to exit LOCAL_TEST_MODE): "
+                )
+                prompt_text = prompt_text.strip()
+            if not prompt_text:
+                log.info("LOCAL_TEST_MODE prompt empty; stopping.")
+                return
+
+            log.info(
+                "LOCAL_TEST_MODE prompt: %r",
+                prompt_text[:200] + ("..." if len(prompt_text) > 200 else ""),
+            )
+
+            planned = await _plan_from_prompt(
+                llm=llm,
+                mission=mission,
+                settings=settings,
+                prompt_text=prompt_text,
+                telemetry_map=telemetry_map,
+            )
+            if planned is None:
+                continue
+
+            name, proto = planned
+            await mission.set_mission(name, proto)
+            log.info(
+                "LOCAL_TEST_MODE planned mission %r (%d items). No StartMission gRPC call made.",
+                name,
+                len(proto.items),
+            )
+            log.info(
+                "LOCAL_TEST_MODE mission payload (JSON view):\n%s",
+                MessageToJson(
+                    proto,
+                    preserving_proto_field_name=True,
+                    always_print_fields_with_no_presence=True,
+                ),
+            )
+        return
 
     async with InternalGrpcClient(settings) as client:
         telemetry_task = asyncio.create_task(
@@ -128,40 +252,17 @@ async def run_mission_test_loop() -> None:
                     continue
 
                 tel_map = await cache.as_any()
-                status_line = await mission.prompt_mission_status()
-
-                await mission.begin_planning()
-                system = build_system_prompt(max_waypoints=settings.max_waypoints)
-                user = build_user_prompt(
-                    user_prompt=text,
-                    telemetry=tel_map,
-                    mission_status=status_line,
+                planned = await _plan_from_prompt(
+                    llm=llm,
+                    mission=mission,
+                    settings=settings,
+                    prompt_text=text,
+                    telemetry_map=tel_map,
                 )
-                log.info("LLM system prompt sent to llama-server:\n%s", system)
-                log.info("LLM user prompt sent to llama-server:\n%s", user)
-
-                try:
-                    plan_dict: dict[str, Any] = await llm.plan_mission(system, user)
-                except Exception as exc:
-                    log.exception("LLM plan_mission failed: %s", exc)
-                    await mission.mark_error(f"llm: {exc}")
+                if planned is None:
                     await asyncio.sleep(prompt_interval)
                     continue
-
-                log.info(
-                    "LLM parsed mission plan (dict after JSON parse):\n%s",
-                    json.dumps(plan_dict, indent=2, ensure_ascii=False),
-                )
-
-                try:
-                    proto = mission_plan_to_proto(plan_dict, tel_map, text)
-                except Exception as exc:
-                    log.exception("mission_plan_to_proto: %s", exc)
-                    await mission.mark_error(f"map: {exc}")
-                    await asyncio.sleep(prompt_interval)
-                    continue
-
-                name = str(plan_dict.get("mission_name", "mission"))[:64]
+                name, proto = planned
 
                 log.info(
                     "gRPC StartMission payload (JSON view):\n%s",
