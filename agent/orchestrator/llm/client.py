@@ -76,10 +76,33 @@ class LlamaClient:
             retry_response = await asyncio.to_thread(self._post_chat_completions, retry_payload)
             retry_content = self._extract_content_text(retry_response)
             log.info("llama-server raw assistant content (retry):\n%s", retry_content)
-            retry_parsed = self._parse_json_from_text(retry_content)
-            if not isinstance(retry_parsed, Mapping):
-                raise ValueError(f"mission plan must be a JSON object, got: {type(retry_parsed)}")
-            return dict(retry_parsed)
+            try:
+                retry_parsed = self._parse_json_from_text(retry_content)
+                if not isinstance(retry_parsed, Mapping):
+                    raise ValueError(f"mission plan must be a JSON object, got: {type(retry_parsed)}")
+                return dict(retry_parsed)
+            except (ValueError, json.JSONDecodeError):
+                # Final retry with higher token budget and even stricter output instruction.
+                final_payload = dict(retry_payload)
+                final_payload["max_tokens"] = max(self._max_tokens * 2, 2048)
+                final_payload["messages"] = [
+                    {
+                        "role": "system",
+                        "content": (
+                            f"{system_prompt}\n"
+                            "Return exactly one valid JSON object and nothing else. "
+                            "No markdown, no prose, no comments, no trailing commas."
+                        ),
+                    },
+                    {"role": "user", "content": user_prompt},
+                ]
+                final_response = await asyncio.to_thread(self._post_chat_completions, final_payload)
+                final_content = self._extract_content_text(final_response)
+                log.info("llama-server raw assistant content (final retry):\n%s", final_content)
+                final_parsed = self._parse_json_from_text(final_content)
+                if not isinstance(final_parsed, Mapping):
+                    raise ValueError(f"mission plan must be a JSON object, got: {type(final_parsed)}")
+                return dict(final_parsed)
 
     def _extract_content_text(self, response: Mapping[str, Any]) -> str:
         choices = response.get("choices")
@@ -125,11 +148,48 @@ class LlamaClient:
         try:
             return json.loads(stripped)
         except json.JSONDecodeError:
-            start_obj = stripped.find("{")
-            end_obj = stripped.rfind("}")
-            if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
-                return json.loads(stripped[start_obj : end_obj + 1])
+            first_obj = self._extract_first_balanced_json_object(stripped)
+            if first_obj is not None:
+                return json.loads(first_obj)
             raise
+
+    def _extract_first_balanced_json_object(self, text: str) -> str | None:
+        """
+        Return the first balanced JSON object from text.
+        Handles braces inside JSON strings and escaped quotes.
+        """
+        start = -1
+        depth = 0
+        in_string = False
+        escaping = False
+
+        for i, ch in enumerate(text):
+            if in_string:
+                if escaping:
+                    escaping = False
+                    continue
+                if ch == "\\":
+                    escaping = True
+                    continue
+                if ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+                continue
+            if ch == "}":
+                if depth == 0:
+                    continue
+                depth -= 1
+                if depth == 0 and start != -1:
+                    return text[start : i + 1]
+        return None
 
     def _post_chat_completions(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         errors: list[str] = []
