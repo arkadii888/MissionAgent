@@ -10,10 +10,10 @@ if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck source=/dev/null
   . "$ENV_FILE"
-  set +a
+  set +ar
 fi
 
-BINARY_PATH="${BINARY_PATH:-$AGENT_DIR/llama.cpp/build/bin/llama-server}"
+BINARY_PATH="${BINARY_PATH:-$AGENT_DIR/llama.cpp/build/llama-server}"
 MODEL_PATH="${MODEL_PATH:-$AGENT_DIR/models/gemma-4-E2B-it-Q4_K_M.gguf}"
 PROJ_PATH="${PROJ_PATH:-$AGENT_DIR/models/mmproj-F16.gguf}"
 PORT="${PORT:-8080}"

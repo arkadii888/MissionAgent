@@ -27,6 +27,7 @@ def build_user_prompt(
         f"- longitude_deg: {telemetry.get('longitude_deg')}\n"
         f"- relative_altitude_m: {telemetry.get('relative_altitude_m')}\n"
         f"- absolute_altitude_m: {telemetry.get('absolute_altitude_m')}\n"
+        # TODO fill up the properties
         f"Mission status: {mission_status}\n"
         "Generate a mission plan now."
     )

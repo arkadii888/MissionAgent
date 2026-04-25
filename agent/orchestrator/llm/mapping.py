@@ -17,6 +17,15 @@ def _as_float(item: Mapping[str, Any], key: str, default: float) -> float:
     return out
 
 
+def _as_optional_float(item: Mapping[str, Any], key: str, default: float | None = None) -> float:
+    if key not in item or item.get(key) is None:
+        return _nan() if default is None else default
+    out = float(item[key])
+    if not math.isfinite(out):
+        raise ValueError(f"{key} must be finite")
+    return out
+
+
 def _as_int(item: Mapping[str, Any], key: str, default: int) -> int:
     value = item.get(key, default)
     return int(value)
@@ -71,11 +80,11 @@ def mission_plan_to_proto(mission_plan: Mapping[str, Any]) -> internal_communica
         proto_item.gimbal_pitch_deg = _nan()
         proto_item.gimbal_yaw_deg = _nan()
         proto_item.camera_action = _as_int(raw_item, "camera_action", 0)
-        proto_item.loiter_time_s = _as_float(raw_item, "loiter_time_s", _nan())
+        proto_item.loiter_time_s = _as_optional_float(raw_item, "loiter_time_s")
         proto_item.camera_photo_interval_s = _as_float(raw_item, "camera_photo_interval_s", 0.1)
         proto_item.acceptance_radius_m = _as_float(raw_item, "acceptance_radius_m", 0.5)
         proto_item.yaw_deg = _as_float(raw_item, "yaw_deg", 0.0)
-        proto_item.camera_photo_distance_m = _as_float(raw_item, "camera_photo_distance_m", _nan())
+        proto_item.camera_photo_distance_m = _as_optional_float(raw_item, "camera_photo_distance_m")
         proto_item.vehicle_action = _as_int(raw_item, "vehicle_action", 0)
 
         result.items.append(proto_item)

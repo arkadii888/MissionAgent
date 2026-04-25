@@ -20,6 +20,11 @@ MISSION_PLAN_SCHEMA: dict = {
                     "latitude_deg",
                     "longitude_deg",
                     "relative_altitude_m",
+                    "speed_m_s",
+                    "is_fly_through",
+                    "loiter_time_s",
+                    "yaw_deg",
+                    "camera_action",
                     "vehicle_action",
                 ],
                 "properties": {
