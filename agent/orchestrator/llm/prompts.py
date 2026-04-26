@@ -32,7 +32,9 @@ def build_user_prompt(
         "3) Use move_vertical for descend/down requests.\n"
         "4) Use turn_relative for turn around (180 degrees).\n"
         "5) Use safety_control for stop/hold/abort/return-home requests.\n"
-        "6) Output only JSON matching schema (no markdown, no comments).\n"
+        "6) For comb_square_area: set side_m (required). If lane spacing is not specified, "
+        "omit lane_spacing_m or use a positive fraction of side_m (e.g. side_m/4); never use 0 for lane spacing.\n"
+        "7) Output only JSON matching schema (no markdown, no comments).\n"
         "Examples:\n"
         '- Input: "Take off to 20m, fly northeast 30m, then descend 5m and land."\n'
         '- Output: {"mission_name":"northeast descend","intents":[{"type":"takeoff","altitude_m":20},{"type":"move_directional","direction":"northeast","distance_m":30},{"type":"move_vertical","direction":"down","distance_m":5},{"type":"land"}]}\n'
@@ -40,6 +42,8 @@ def build_user_prompt(
         '- Output: {"mission_name":"square comb","intents":[{"type":"takeoff","altitude_m":15},{"type":"comb_square_area","side_m":40,"lane_spacing_m":5,"start_corner":"south_west"},{"type":"safety_control","action":"return_home"},{"type":"land"}]}\n'
         '- Input: "Take off, turn around, hold position, then land."\n'
         '- Output: {"mission_name":"turn and hold","intents":[{"type":"takeoff","altitude_m":10},{"type":"turn_relative","maneuver":"turn_around"},{"type":"safety_control","action":"hold"},{"type":"land"}]}\n'
+        '- Input: "Take off, comb a 5m square, then land." (no lane spacing given)\n'
+        '- Output: {"mission_name":"small square","intents":[{"type":"takeoff","altitude_m":10},{"type":"comb_square_area","side_m":5,"start_corner":"south_west"},{"type":"land"}]}\n'
         f"Mission status: {mission_status}\n"
         "Generate mission intents now."
     )

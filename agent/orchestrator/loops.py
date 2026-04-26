@@ -112,7 +112,7 @@ async def _plan_from_prompt(
         json.dumps(plan_dict, indent=2, ensure_ascii=False),
     )
 
-    try:
+    def _run_expand(pd: dict[str, Any]) -> tuple[Any, list[dict[str, Any]]]:
         called_handlers: list[dict[str, Any]] = []
 
         def _on_handler_called(intent_type: str, intent_payload: dict[str, Any]) -> None:

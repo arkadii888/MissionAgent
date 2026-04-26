@@ -102,7 +102,7 @@ MISSION_INTENT_SCHEMA: dict = {
                         "additionalProperties": False,
                     },
                     {
-                        "required": ["type"],
+                        "required": ["type", "side_m"],
                         "properties": {
                             "type": {"const": "comb_square_area"},
                             "side_m": {"type": "number", "minimum": 1, "maximum": 1000},
