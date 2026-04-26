@@ -91,3 +91,5 @@ agent/llama.cpp/build/
 # Models
 agent/models/*
 !agent/models/.gitkeep
+
+llama_binaries/

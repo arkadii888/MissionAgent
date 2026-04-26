@@ -112,7 +112,7 @@ async def _plan_from_prompt(
         json.dumps(plan_dict, indent=2, ensure_ascii=False),
     )
 
-    def _run_expand(pd: dict[str, Any]) -> tuple[Any, list[dict[str, Any]]]:
+    try:
         called_handlers: list[dict[str, Any]] = []
 
         def _on_handler_called(intent_type: str, intent_payload: dict[str, Any]) -> None:
@@ -277,7 +277,6 @@ async def run_mission_test_loop() -> None:
                 planned_trace_id,
                 {"local_test_mode": True, "mission_name": name, "item_count": len(proto.items)},
             )
-        return
 
     async with InternalGrpcClient(settings) as client:
         telemetry_task = asyncio.create_task(
