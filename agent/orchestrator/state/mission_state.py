@@ -1,3 +1,5 @@
+"""In-memory planner state mirrored for prompts and downstream mission execution hooks."""
+
 from enum import StrEnum
 
 import asyncio
@@ -6,7 +8,7 @@ from agent.orchestrator.protoc import internal_communication_pb2
 
 
 class MissionPhase(StrEnum):
-    """High-level mission lifecycle (orchestrator-owned; not from PX4)."""
+    """Where the orchestrator is in mission handling (distinct from MAVLink autopilot modes)."""
 
     IDLE = "IDLE"
     PLANNING = "PLANNING"
@@ -18,7 +20,7 @@ class MissionPhase(StrEnum):
 
 
 class MissionState:
-    """Tracks the active plan, progress, and phase for prompts, triggers, and the executor."""
+    """Stores the uploaded plan name, protobuf copy, phase, waypoint index, and last error."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -51,6 +53,7 @@ class MissionState:
         name: str,
         plan: internal_communication_pb2.MissionItemList,
     ) -> None:
+        """Persist a deep copy of ``plan`` and mark phase ``UPLOADED``."""
         stored = internal_communication_pb2.MissionItemList()
         stored.CopyFrom(plan)
         async with self._lock:
@@ -70,6 +73,7 @@ class MissionState:
             self._waypoint_index = index
 
     async def advance_waypoint(self) -> None:
+        """Increment index without passing the last waypoint."""
         async with self._lock:
             n = len(self._plan.items) if self._plan is not None else 0
             if n == 0:
@@ -77,6 +81,7 @@ class MissionState:
             self._waypoint_index = min(self._waypoint_index + 1, n - 1)
 
     async def mark_complete(self) -> None:
+        """Set phase ``COMPLETE`` and park index on final waypoint."""
         async with self._lock:
             self._phase = MissionPhase.COMPLETE
             self._waypoint_index = 0
@@ -97,6 +102,7 @@ class MissionState:
             self._last_error = None
 
     async def get_plan(self) -> internal_communication_pb2.MissionItemList | None:
+        """Return a deep copy or ``None`` if no plan uploaded."""
         async with self._lock:
             if self._plan is None:
                 return None
@@ -105,14 +111,14 @@ class MissionState:
             return out
 
     async def get_waypoint_progress(self) -> tuple[int, int]:
-        """Current waypoint index and total waypoints (0,0 if no plan)."""
+        """Return ``(zero_based_index, total_count)``, or ``(0, 0)`` when idle."""
         async with self._lock:
             if self._plan is None:
                 return (0, 0)
             return (self._waypoint_index, len(self._plan.items))
 
     async def prompt_mission_status(self) -> str:
-        """Single line for `build_user_prompt(mission_status=...)`."""
+        """Compact line for embedding in LLM prompts (phase, optional name/index, optional error)."""
         async with self._lock:
             phase = self._phase
             name = self._mission_name

@@ -1,3 +1,5 @@
+"""Small CLI to verify gRPC telemetry connectivity (standalone smoke test)."""
+
 import asyncio
 from dataclasses import replace
 
@@ -15,6 +17,7 @@ def _load_settings() -> Settings:
 
 
 async def get_telemetry() -> None:
+    """Print one ``GetTelemetry`` response or the RPC status on failure."""
     settings = _load_settings()
     async with InternalGrpcClient(settings) as client:
         try:

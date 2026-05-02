@@ -148,7 +148,7 @@ When intents are converted to protobuf mission items, these defaults are applied
 | `loiter_time_s` | default `1.0` (overridden by `loiter` intent) |
 | `is_fly_through` | `true` for `move` and `return_to_home`; `false` for `takeoff`/`land` |
 | `vehicle_action` | `1` for `takeoff`, `0` for normal move/return, `2` for `land` |
-| `relative_altitude_m` | clamped to `[0, 100]` meters |
+| `relative_altitude_m` | clamped to `[0, 50]` meters |
 | `yaw_deg` | normalized to `[-360, 360]`; can be set via `yaw` intent |
 | `gimbal_pitch_deg` / `gimbal_yaw_deg` | `NaN` |
 | `camera_photo_interval_s` | `0.1` |
@@ -157,7 +157,7 @@ When intents are converted to protobuf mission items, these defaults are applied
 
 Validation contract enforced before upload:
 - latitude in `[-90, 90]`, longitude in `[-180, 180]`
-- altitude in `[0, 100]`
+- altitude in `[0, 50]`
 - `speed_m_s == 1.0`
 - `camera_action == 0`
 - `vehicle_action in {0,1,2,3,4}`
@@ -240,8 +240,9 @@ uv run pytest -q agent/tests/test_llama_client_integration.py
 
 To add a new intent:
 
-1. Add a new `oneOf` schema branch in `agent/orchestrator/llm/schemas.py`.
-2. Add a handler in `agent/orchestrator/mission_intents/` (for example `area_patterns.py`).
-3. Register it in `agent/orchestrator/mission_intents/registry.py`.
-4. Add/update few-shot examples in `agent/orchestrator/llm/prompts.py` so Gemma 4 E2B emits the new intent.
-5. Add tests in `agent/tests/test_mission_intents.py` and, if needed, integration tests.
+1. Add an `IntentSpec` entry to `INTENT_SPECS` in `agent/orchestrator/mission_intents/intent_specs.py` (this defines the schema `enum`/`oneOf` branch and registers the handler with `build_default_registry()` via `expand.build_default_registry()`).
+2. Implement the handler in `agent/orchestrator/mission_intents/` (for example `area_patterns.py` or `basic.py`).
+3. Add/update few-shot examples in `agent/orchestrator/llm/prompts.py` so Gemma 4 E2B emits the new intent.
+4. Add tests in `agent/tests/test_mission_intents.py` and, if needed, integration tests.
+
+`agent/orchestrator/llm/schemas.py` pulls the JSON schema from the same specs; edit it only if you need non-intent tweaks (aliases, etc.).

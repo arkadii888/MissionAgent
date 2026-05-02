@@ -1,3 +1,5 @@
+"""HTTP client for OpenAI-style chat completions against llama-server."""
+
 import asyncio
 import json
 import logging
@@ -11,6 +13,11 @@ log = logging.getLogger(__name__)
 
 
 class LlamaClient:
+    """Call ``/v1/chat/completions`` (or legacy ``/chat/completions``) with a JSON-schema mission plan.
+
+    Retries with stricter instructions if the model returns markdown or invalid JSON.
+    """
+
     def __init__(
         self,
         base_url: str,
@@ -31,13 +38,25 @@ class LlamaClient:
         self._temperature = temperature
 
     async def plan_mission(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        """Return a parsed mission intent plan (JSON object) from the model.
+
+        Args:
+            system_prompt: Rules and schema constraints.
+            user_prompt: Operator request plus telemetry line.
+
+        Returns:
+            Mission plan dict with ``mission_name`` and ``intents`` list.
+
+        Raises:
+            ValueError: If the response is not a JSON object or is empty.
+            RuntimeError: On HTTP or connection errors from the server.
+        """
         payload = {
             "model": self._model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            # Keep both formats: different llama.cpp builds enforce one or the other.
             "json_schema": MISSION_INTENT_SCHEMA,
             "response_format": {
                 "type": "json_schema",
@@ -59,7 +78,6 @@ class LlamaClient:
                 raise ValueError("mission intent plan must be a JSON object")
             return dict(parsed)
         except (ValueError, json.JSONDecodeError):
-            # Retry once with stronger output constraints for servers that ignore schema hints.
             retry_payload = dict(payload)
             retry_payload["messages"] = [
                 {
@@ -84,7 +102,6 @@ class LlamaClient:
                     )
                 return dict(retry_parsed)
             except (ValueError, json.JSONDecodeError):
-                # Final retry with higher token budget and even stricter output instruction.
                 final_payload = dict(retry_payload)
                 final_payload["max_tokens"] = max(self._max_tokens, 512)
                 final_payload["messages"] = [
@@ -109,6 +126,7 @@ class LlamaClient:
                 return dict(final_parsed)
 
     def _extract_content_text(self, response: Mapping[str, Any]) -> str:
+        """Pick assistant text from various OpenAI-compatible response shapes."""
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ValueError(f"llama response missing choices: {response}")
@@ -123,12 +141,10 @@ class LlamaClient:
             if isinstance(content, str) and content.strip():
                 return content
 
-            # Some servers put useful model output here.
             reasoning_content = message.get("reasoning_content")
             if isinstance(reasoning_content, str) and reasoning_content.strip():
                 return reasoning_content
 
-        # Fallback for alternate server response formats.
         content = first_choice.get("content")
         if isinstance(content, str) and content.strip():
             return content
@@ -136,11 +152,11 @@ class LlamaClient:
         raise ValueError(f"llama returned empty content payload: {response}")
 
     def _parse_json_from_text(self, text: str) -> Any:
+        """Parse JSON, stripping optional ```json fences and scanning for a first ``{...}`` object."""
         stripped = text.strip()
         if not stripped:
             raise ValueError("llama response content is empty")
 
-        # Common markdown-wrapped output: ```json ... ```
         if stripped.startswith("```"):
             lines = stripped.splitlines()
             if lines:
@@ -158,10 +174,7 @@ class LlamaClient:
             raise
 
     def _extract_first_balanced_json_object(self, text: str) -> str | None:
-        """
-        Return the first balanced JSON object from text.
-        Handles braces inside JSON strings and escaped quotes.
-        """
+        """Find the first top-level JSON object; respects strings and escapes."""
         start = -1
         depth = 0
         in_string = False
@@ -196,6 +209,7 @@ class LlamaClient:
         return None
 
     def _post_chat_completions(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """POST JSON; try OpenAI path first, then legacy path."""
         errors: list[str] = []
         for path in ("/v1/chat/completions", "/chat/completions"):
             try:

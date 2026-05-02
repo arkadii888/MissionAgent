@@ -1,22 +1,13 @@
+"""Expand a JSON intent list into protobuf ``MissionItem`` waypoints."""
+
 from collections.abc import Mapping
 from typing import Any, Callable
 
 from agent.orchestrator.protoc import internal_communication_pb2
 
-from .basic import (
-    handle_land,
-    handle_loiter,
-    handle_move,
-    handle_move_directional,
-    handle_move_vertical,
-    handle_return_to_home,
-    handle_safety_control,
-    handle_takeoff,
-    handle_turn_relative,
-    handle_yaw,
-)
-from .area_patterns import handle_comb_square_area
 from .context import ExpansionContext
+from .fields import optional_float
+from .intent_specs import build_default_registry_from_specs
 from .proto import validate_proto_list
 from .registry import IntentRegistry
 
@@ -24,36 +15,8 @@ HandlerLogFn = Callable[[str, Mapping[str, Any]], None] | None
 
 
 def build_default_registry() -> IntentRegistry:
-    registry = IntentRegistry()
-    registry.register("takeoff", handle_takeoff)
-    registry.register("move", handle_move)
-    registry.register("move_directional", handle_move_directional)
-    registry.register("move_vertical", handle_move_vertical)
-    registry.register("turn_relative", handle_turn_relative)
-    registry.register("safety_control", handle_safety_control)
-    registry.register("comb_square_area", handle_comb_square_area)
-    registry.register("loiter", handle_loiter)
-    registry.register("yaw", handle_yaw)
-    registry.register("return_to_home", handle_return_to_home)
-    registry.register("land", handle_land)
-    return registry
-
-
-def _as_float(item: Mapping[str, Any], key: str, default: float) -> float:
-    value = item.get(key, default)
-    out = float(value)
-    if out != out:
-        raise ValueError(f"{key} must be finite")
-    return out
-
-
-def _validate_contract(result: internal_communication_pb2.MissionItemList) -> None:
-    validate_proto_list(result)
-    for item in result.items:
-        if item.speed_m_s != 1.0:
-            raise ValueError("contract violation: speed_m_s must be 1.0")
-        if item.camera_action != 0:
-            raise ValueError("contract violation: camera_action must be 0")
+    """Registry with all built-in intent types from :data:`intent_specs.INTENT_SPECS`."""
+    return build_default_registry_from_specs()
 
 
 def expand_intents_to_mission(
@@ -63,12 +26,30 @@ def expand_intents_to_mission(
     registry: IntentRegistry | None = None,
     on_handler_called: HandlerLogFn = None,
 ) -> internal_communication_pb2.MissionItemList:
+    """Walk ``mission_plan["intents"]`` and append waypoints derived from telemetry origin.
+
+    Args:
+        mission_plan: Parsed JSON with ``intents`` (non-empty list of objects).
+        telemetry: Degrees + ``relative_altitude_m`` used as the planar origin.
+        registry: Override handler map (tests); default uses built-ins.
+        on_handler_called: Optional hook ``(intent_type, intent_dict)`` for logging each step.
+
+    Returns:
+        Filled ``MissionItemList`` passing geometry and upload contract checks.
+
+    Raises:
+        ValueError: On invalid telemetry, unknown intent types, or contract violations.
+
+    Notes:
+        After ``safety_control`` preempts, later movement intents are skipped except
+        ``land`` and repeat ``safety_control``.
+    """
     intents = mission_plan.get("intents")
     if not isinstance(intents, list) or not intents:
         raise ValueError("mission_plan.intents must be a non-empty list")
-    current_lat = _as_float(telemetry, "latitude_deg", 0.0)
-    current_lon = _as_float(telemetry, "longitude_deg", 0.0)
-    current_alt = _as_float(telemetry, "relative_altitude_m", 0.0)
+    current_lat = optional_float(telemetry, "latitude_deg", 0.0)
+    current_lon = optional_float(telemetry, "longitude_deg", 0.0)
+    current_alt = optional_float(telemetry, "relative_altitude_m", 0.0)
     if not (-90.0 <= current_lat <= 90.0):
         raise ValueError("telemetry latitude_deg must be in [-90, 90]")
     if not (-180.0 <= current_lon <= 180.0):
@@ -99,3 +80,13 @@ def expand_intents_to_mission(
     result.items.extend(ctx.items)
     _validate_contract(result)
     return result
+
+
+def _validate_contract(result: internal_communication_pb2.MissionItemList) -> None:
+    """Raise if items fail geometry validation or executor upload rules (speed, camera)."""
+    validate_proto_list(result)
+    for item in result.items:
+        if item.speed_m_s != 1.0:
+            raise ValueError("contract violation: speed_m_s must be 1.0")
+        if item.camera_action != 0:
+            raise ValueError("contract violation: camera_action must be 0")

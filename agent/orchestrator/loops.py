@@ -1,11 +1,4 @@
-"""
-Basic orchestrator loop for integration testing against a real gRPC server and llama-server.
-
-One asyncio task keeps ``TelemetryCache`` fresh. The main coroutine polls ``GetPrompt``; when
-the prompt string changes to a new non-empty value, it fetches cached telemetry, builds prompts,
-calls the LLM for mission intents, expands intents into ``MissionItemList``, and calls
-``StartMission``.
-"""
+"""Mission planning loop: telemetry, operator prompt, LLM intents, waypoint expansion, optional gRPC upload."""
 
 import asyncio
 import contextlib
@@ -27,7 +20,6 @@ from agent.orchestrator.state import MissionState, TelemetryCache
 
 log = logging.getLogger(__name__)
 
-# Default prompt polling interval in seconds.
 _DEFAULT_PROMPT_POLL_S = 1
 _LOCAL_TEST_TELEMETRY_DEFAULTS: dict[str, float] = {
     "latitude_deg": 47.3977419,
@@ -38,6 +30,7 @@ _LOCAL_TEST_TELEMETRY_DEFAULTS: dict[str, float] = {
 
 
 def _load_settings() -> Settings:
+    """Environment-backed settings with sane defaults for llama URL, model, and gRPC."""
     base = Settings.from_env()
     out = base
     if out.grpc_target is None:
@@ -50,6 +43,7 @@ def _load_settings() -> Settings:
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
+    """True if ``name`` is set to a common truthy string (``1``, ``true``, ``yes``, ``on``)."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -57,6 +51,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _load_local_test_telemetry() -> dict[str, float]:
+    """Baseline telemetry map; overridden by ``LOCAL_TEST_*`` env vars when set."""
     out = dict(_LOCAL_TEST_TELEMETRY_DEFAULTS)
     for key, default_value in _LOCAL_TEST_TELEMETRY_DEFAULTS.items():
         raw = os.getenv(f"LOCAL_TEST_{key.upper()}")
@@ -79,6 +74,14 @@ async def _plan_from_prompt(
     json_logger: JsonPipelineLogger,
     trace_id: str,
 ) -> tuple[str, Any, str] | None:
+    """Run LLM then expand JSON intents to protobuf mission items.
+
+    Returns:
+        ``(mission_name, MissionItemList, trace_id)`` on success, or ``None`` if planning failed.
+
+    Side effects:
+        Updates ``mission`` phase on error; logs pipeline events to ``json_logger``.
+    """
     status_line = await mission.prompt_mission_status()
     await mission.begin_planning()
     system = build_system_prompt(max_waypoints=settings.max_waypoints)
@@ -162,6 +165,7 @@ async def _telemetry_poll_loop(
     period_s: float,
     stop: asyncio.Event,
 ) -> None:
+    """Refresh ``cache`` from ``GetTelemetry`` every ``period_s`` until ``stop`` is set."""
     while not stop.is_set():
         try:
             t = await client.get_telemetry()
@@ -177,9 +181,13 @@ async def _telemetry_poll_loop(
 
 
 async def run_mission_test_loop() -> None:
-    """
-    Run until SIGINT/KeyboardInterrupt: poll prompts, run LLM, upload mission, and keep
-    telemetry current in the background.
+    """Run until interrupt: poll prompts, plan missions, optionally upload via gRPC.
+
+    With ``LOCAL_TEST_MODE`` set, reads prompts from stdin (or ``LOCAL_TEST_PROMPT`` once) and
+    skips ``StartMission``. Otherwise opens gRPC and sends each new prompt string as one mission.
+
+    Repeated identical prompts in gRPC mode are ignored for one process lifetime so a failing
+    plan does not spin forever.
     """
     settings = _load_settings()
     prompt_interval = float(os.getenv("PROMPT_POLL_INTERVAL_S", str(_DEFAULT_PROMPT_POLL_S)))
@@ -204,8 +212,6 @@ async def run_mission_test_loop() -> None:
         enabled=settings.mission_json_log_enabled,
     )
     local_test_mode = _env_flag("LOCAL_TEST_MODE")
-    # Process each unique prompt once per run to avoid hot retry loops when one prompt
-    # deterministically fails in LLM expansion or gRPC upload.
     last_seen_prompt: str | None = None
 
     log.info(
@@ -300,7 +306,6 @@ async def run_mission_test_loop() -> None:
 
                 log.info("New prompt: %r", text[:200] + ("..." if len(text) > 200 else ""))
 
-                # Refresh telemetry before planning so expansion uses the latest origin.
                 try:
                     tel = await client.get_telemetry()
                     await cache.update_from_telemetry(tel)
@@ -370,6 +375,7 @@ __all__ = ["run_mission_test_loop", "_load_settings"]
 
 
 def main() -> None:
+    """CLI entry: configure logging and run :func:`run_mission_test_loop`."""
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

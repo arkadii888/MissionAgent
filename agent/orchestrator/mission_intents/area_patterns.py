@@ -1,21 +1,18 @@
+"""Area-coverage intents; expand into many fly-through segments (currently square comb pattern)."""
+
 from collections.abc import Mapping
 from typing import Any
 
-from .basic import _append_waypoint
+from .basic import append_waypoint
 from .context import ExpansionContext
+from .fields import optional_float
 
 _DEFAULT_SIDE_M = 40.0
 _DEFAULT_LANE_SPACING_M = 5.0
 
 
-def _as_float(intent: Mapping[str, Any], key: str, default: float) -> float:
-    value = float(intent.get(key, default))
-    if value != value:
-        raise ValueError(f"{key} must be finite")
-    return value
-
-
 def _as_corner(intent: Mapping[str, Any]) -> str:
+    """Return validated ``start_corner`` key (defaults to south-west)."""
     raw = str(intent.get("start_corner", "south_west")).strip().lower()
     valid = {"south_west", "south_east", "north_west", "north_east"}
     if raw not in valid:
@@ -24,15 +21,20 @@ def _as_corner(intent: Mapping[str, Any]) -> str:
 
 
 def handle_comb_square_area(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    side_m = _as_float(intent, "side_m", _DEFAULT_SIDE_M)
-    lane_spacing_m = _as_float(intent, "lane_spacing_m", _DEFAULT_LANE_SPACING_M)
+    """Back-and-forth north legs with east steps; footprint from ``side_m`` and lane count.
+
+    Optional ``start_corner`` flips traversal direction inside the nominal square anchored
+    at the current cumulative horizontal position.
+    """
+    side_m = optional_float(intent, "side_m", _DEFAULT_SIDE_M)
+    lane_spacing_m = optional_float(intent, "lane_spacing_m", _DEFAULT_LANE_SPACING_M)
     if side_m <= 0.0:
         raise ValueError("side_m must be > 0")
     if lane_spacing_m <= 0.0:
         raise ValueError("lane_spacing_m must be > 0")
 
     if "altitude_m" in intent:
-        altitude_m = _as_float(intent, "altitude_m", ctx.current_altitude_m)
+        altitude_m = optional_float(intent, "altitude_m", ctx.current_altitude_m)
         if altitude_m < 0.0:
             raise ValueError("altitude_m must be >= 0")
         ctx.current_altitude_m = altitude_m
@@ -51,7 +53,7 @@ def handle_comb_square_area(ctx: ExpansionContext, intent: Mapping[str, Any]) ->
     for lane_idx in range(lanes + 1):
         north_delta = north_sign * (side_m if lane_idx % 2 == 0 else -side_m)
         ctx.north_total_m += north_delta
-        _append_waypoint(
+        append_waypoint(
             ctx,
             vehicle_action=0,
             is_fly_through=True,
@@ -62,7 +64,7 @@ def handle_comb_square_area(ctx: ExpansionContext, intent: Mapping[str, Any]) ->
             break
         east_delta = east_sign * step_m
         ctx.east_total_m += east_delta
-        _append_waypoint(
+        append_waypoint(
             ctx,
             vehicle_action=0,
             is_fly_through=True,

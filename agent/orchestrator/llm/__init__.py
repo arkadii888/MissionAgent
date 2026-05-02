@@ -1,3 +1,5 @@
+"""LLM-facing schema, prompts, and HTTP client for structured mission JSON."""
+
 from .client import LlamaClient
 from .prompts import build_system_prompt, build_user_prompt
 from .schemas import (

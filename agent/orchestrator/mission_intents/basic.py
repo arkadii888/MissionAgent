@@ -1,7 +1,10 @@
+"""Core intent handlers: takeoff/move/safety/yaw/etc. Waypoints emit at cumulative N/E totals."""
+
 from collections.abc import Mapping
 from typing import Any
 
 from .context import ExpansionContext
+from .fields import optional_float, require_float
 from .geometry import bearing_to_yaw_deg, clamp_relative_altitude_m, compute_lat_long_from_offset, normalize_yaw
 from .proto import build_proto_item
 
@@ -44,16 +47,7 @@ _SAFETY_ACTION_SYNONYMS: dict[str, str] = {
 }
 
 
-def _as_float(intent: Mapping[str, Any], key: str) -> float:
-    if key not in intent:
-        raise ValueError(f"intent field {key!r} is required")
-    value = float(intent[key])
-    if value != value:  # NaN check
-        raise ValueError(f"intent field {key!r} must be finite")
-    return value
-
-
-def _append_waypoint(
+def append_waypoint(
     ctx: ExpansionContext,
     *,
     vehicle_action: int,
@@ -62,6 +56,11 @@ def _append_waypoint(
     north_delta_m: float = 0.0,
     east_delta_m: float = 0.0,
 ) -> None:
+    """Emit a ``MissionItem`` at current totals; yaw from pending intent or move direction.
+
+    ``ctx.north_total_m`` / ``ctx.east_total_m`` must already include this leg—callers typically
+    add deltas before invoking this helper.
+    """
     yaw_deg = (
         ctx.pending_yaw_deg
         if ctx.pending_yaw_deg is not None
@@ -88,18 +87,18 @@ def _append_waypoint(
 
 
 def handle_takeoff(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    ctx.current_altitude_m = clamp_relative_altitude_m(_as_float(intent, "altitude_m"))
-    _append_waypoint(ctx, vehicle_action=1, is_fly_through=False)
+    ctx.current_altitude_m = clamp_relative_altitude_m(require_float(intent, "altitude_m"))
+    append_waypoint(ctx, vehicle_action=1, is_fly_through=False)
 
 
 def handle_move(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    north_m = _as_float(intent, "north_m")
-    east_m = _as_float(intent, "east_m")
-    up_m = _as_float(intent, "up_m")
+    north_m = require_float(intent, "north_m")
+    east_m = require_float(intent, "east_m")
+    up_m = require_float(intent, "up_m")
     ctx.north_total_m += north_m
     ctx.east_total_m += east_m
     ctx.current_altitude_m = clamp_relative_altitude_m(ctx.current_altitude_m + up_m)
-    _append_waypoint(
+    append_waypoint(
         ctx,
         vehicle_action=0,
         is_fly_through=True,
@@ -113,8 +112,8 @@ def handle_move_directional(ctx: ExpansionContext, intent: Mapping[str, Any]) ->
     if direction_raw not in _DIRECTION_VECTORS:
         raise ValueError(f"unsupported world-frame direction: {direction_raw!r}")
     north_unit, east_unit = _DIRECTION_VECTORS[direction_raw]
-    distance_m = float(intent.get("distance_m", _DEFAULT_DIRECTIONAL_DISTANCE_M))
-    if distance_m != distance_m or distance_m <= 0.0:
+    distance_m = optional_float(intent, "distance_m", _DEFAULT_DIRECTIONAL_DISTANCE_M)
+    if distance_m <= 0.0:
         raise ValueError("distance_m must be > 0")
     north_m = north_unit * distance_m
     east_m = east_unit * distance_m
@@ -125,19 +124,19 @@ def handle_move_vertical(ctx: ExpansionContext, intent: Mapping[str, Any]) -> No
     direction_raw = str(intent.get("direction", "down")).strip().lower()
     if direction_raw not in _DESCEND_SYNONYMS:
         raise ValueError("move_vertical only supports descending direction in phase 1")
-    distance_m = float(intent.get("distance_m", 5.0))
-    if distance_m != distance_m or distance_m <= 0.0:
+    distance_m = optional_float(intent, "distance_m", 5.0)
+    if distance_m <= 0.0:
         raise ValueError("distance_m must be > 0")
     handle_move(ctx, {"north_m": 0.0, "east_m": 0.0, "up_m": -distance_m})
 
 
 def handle_turn_relative(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     maneuver = str(intent.get("maneuver", "turn_around")).strip().lower()
-    degrees = float(intent.get("degrees", 180.0))
+    degrees = optional_float(intent, "degrees", 180.0)
     if maneuver not in _TURN_AROUND_SYNONYMS and abs(degrees - 180.0) > 1e-9:
         raise ValueError("turn_relative only supports turn-around (180 degrees) in phase 1")
     handle_yaw(ctx, {"degrees": normalize_yaw((ctx.pending_yaw_deg or 0.0) + 180.0)})
-    _append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=0.0)
+    append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=0.0)
 
 
 def handle_safety_control(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
@@ -148,22 +147,22 @@ def handle_safety_control(ctx: ExpansionContext, intent: Mapping[str, Any]) -> N
     if action == "return_home":
         handle_return_to_home(ctx, intent)
     elif action == "hold":
-        _append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=5.0)
+        append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=5.0)
     elif action in {"stop", "abort"}:
-        _append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=0.0)
+        append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=0.0)
     ctx.preempted = True
 
 
 def handle_loiter(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    seconds = _as_float(intent, "seconds")
+    seconds = require_float(intent, "seconds")
     if not ctx.items:
-        _append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=seconds)
+        append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=seconds)
         return
     ctx.items[-1].loiter_time_s = seconds
 
 
 def handle_yaw(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    ctx.pending_yaw_deg = normalize_yaw(_as_float(intent, "degrees"))
+    ctx.pending_yaw_deg = normalize_yaw(require_float(intent, "degrees"))
 
 
 def handle_return_to_home(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
@@ -172,7 +171,7 @@ def handle_return_to_home(ctx: ExpansionContext, intent: Mapping[str, Any]) -> N
     east_delta_m = -ctx.east_total_m
     ctx.north_total_m = 0.0
     ctx.east_total_m = 0.0
-    _append_waypoint(
+    append_waypoint(
         ctx,
         vehicle_action=0,
         is_fly_through=True,
@@ -183,4 +182,4 @@ def handle_return_to_home(ctx: ExpansionContext, intent: Mapping[str, Any]) -> N
 
 def handle_land(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     del intent
-    _append_waypoint(ctx, vehicle_action=2, is_fly_through=False)
+    append_waypoint(ctx, vehicle_action=2, is_fly_through=False)

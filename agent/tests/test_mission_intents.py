@@ -141,3 +141,34 @@ def test_comb_square_area_implemented() -> None:
     # 9 north/south passes + 8 east connectors + takeoff + land
     assert len(out.items) == 19
     assert out.items[-1].vehicle_action == 2
+
+
+def test_comb_square_area_optional_fields_use_defaults() -> None:
+    plan = {
+        "mission_name": "comb defaults",
+        "intents": [
+            {"type": "takeoff", "altitude_m": 20},
+            {"type": "comb_square_area"},
+            {"type": "land"},
+        ],
+    }
+    explicit = {
+        "mission_name": "comb explicit defaults",
+        "intents": [
+            {"type": "takeoff", "altitude_m": 20},
+            {
+                "type": "comb_square_area",
+                "side_m": 40,
+                "lane_spacing_m": 5,
+                "start_corner": "south_west",
+            },
+            {"type": "land"},
+        ],
+    }
+    out_default = expand_intents_to_mission(plan, _telemetry())
+    out_explicit = expand_intents_to_mission(explicit, _telemetry())
+    assert len(out_default.items) == len(out_explicit.items)
+    for a, b in zip(out_default.items, out_explicit.items, strict=True):
+        assert a.latitude_deg == pytest.approx(b.latitude_deg)
+        assert a.longitude_deg == pytest.approx(b.longitude_deg)
+        assert a.relative_altitude_m == pytest.approx(b.relative_altitude_m)
