@@ -77,10 +77,10 @@ uv sync
 uv run pytest -q agent/tests
 ```
 
-- **Single file:** `uv run pytest -q agent/tests/test_mission_intents.py`
-- **Verbose output:** add `-s` to show prints, or run without `-q` for default verbosity.
+- **One module:** `uv run pytest -q agent/tests/test_mission_intents.py` or `.../test_state.py`
+- **Verbose output:** add `-s` to show prints, or drop `-q` for default verbosity.
 
-End-to-end checks with a real model use `python -m agent.orchestrator.loops` (with `make run-llama-server` and gRPC as documented below); the unit suite stays offline.
+End-to-end with a model: `python -m agent.orchestrator.loops` (see Mission test loop below); unit tests stay offline.
 
 ## Mission test loop (gRPC + llama)
 
@@ -218,21 +218,6 @@ Inspect quickly:
 
 ```bash
 rg "mission_converted|mission_upload_failed" agent/logs/mission_pipeline.jsonl
-```
-
-## Tests for Mission DSL
-
-Run all orchestrator tests:
-
-```bash
-uv run pytest -q agent/tests
-```
-
-Targeted:
-
-```bash
-uv run pytest -q agent/tests/test_mission_intents.py
-uv run pytest -q agent/tests/test_state.py
 ```
 
 ## Add a new mission intent
