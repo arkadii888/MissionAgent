@@ -77,10 +77,10 @@ uv sync
 uv run pytest -q agent/tests
 ```
 
-- **Single file:** `uv run pytest -q agent/tests/test_state.py -s`
+- **Single file:** `uv run pytest -q agent/tests/test_mission_intents.py`
 - **Verbose output:** add `-s` to show prints, or run without `-q` for default verbosity.
 
-`agent/tests/test_llama_client_integration.py` talks to a running `llama-server` when it is up (e.g. `make run-llama-server` in another terminal). It may skip or behave differently if the server is not reachable. Set `LLAMA_CPP_URL` and `MODEL_NAME` if you use a non-default URL or model name (same as `agent/.env.orchestrator`).
+End-to-end checks with a real model use `python -m agent.orchestrator.loops` (with `make run-llama-server` and gRPC as documented below); the unit suite stays offline.
 
 ## Mission test loop (gRPC + llama)
 
@@ -232,8 +232,7 @@ Targeted:
 
 ```bash
 uv run pytest -q agent/tests/test_mission_intents.py
-uv run pytest -q agent/tests/test_json_pipeline_logging.py
-uv run pytest -q agent/tests/test_llama_client_integration.py
+uv run pytest -q agent/tests/test_state.py
 ```
 
 ## Add a new mission intent
@@ -243,6 +242,6 @@ To add a new intent:
 1. Add an `IntentSpec` entry to `INTENT_SPECS` in `agent/orchestrator/mission_intents/intent_specs.py` (this defines the schema `enum`/`oneOf` branch and registers the handler with `build_default_registry()` via `expand.build_default_registry()`).
 2. Implement the handler in `agent/orchestrator/mission_intents/` (for example `area_patterns.py` or `basic.py`).
 3. Add/update few-shot examples in `agent/orchestrator/llm/prompts.py` so Gemma 4 E2B emits the new intent.
-4. Add tests in `agent/tests/test_mission_intents.py` and, if needed, integration tests.
+4. Add tests in `agent/tests/test_mission_intents.py`.
 
 `agent/orchestrator/llm/schemas.py` pulls the JSON schema from the same specs; edit it only if you need non-intent tweaks (aliases, etc.).

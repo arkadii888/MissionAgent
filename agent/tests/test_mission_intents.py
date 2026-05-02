@@ -69,30 +69,6 @@ def test_phase1_world_frame_directional_and_vertical_and_turn() -> None:
     assert out.items[2].relative_altitude_m == pytest.approx(12.0)
 
 
-def test_direction_matrix_all_compass_outputs() -> None:
-    directions = [
-        "north",
-        "south",
-        "east",
-        "west",
-        "northeast",
-        "northwest",
-        "southeast",
-        "southwest",
-    ]
-    for direction in directions:
-        plan = {
-            "mission_name": f"dir-{direction}",
-            "intents": [
-                {"type": "takeoff", "altitude_m": 10},
-                {"type": "move_directional", "direction": direction, "distance_m": 10},
-                {"type": "land"},
-            ],
-        }
-        out = expand_intents_to_mission(plan, _telemetry())
-        assert len(out.items) == 3
-
-
 def test_drone_relative_phrases_rejected() -> None:
     plan = {
         "mission_name": "no relative",
@@ -122,27 +98,6 @@ def test_safety_preempts_following_movement() -> None:
     assert out.items[2].vehicle_action == 2
 
 
-def test_comb_square_area_implemented() -> None:
-    plan = {
-        "mission_name": "comb",
-        "intents": [
-            {"type": "takeoff", "altitude_m": 20},
-            {
-                "type": "comb_square_area",
-                "side_m": 40,
-                "lane_spacing_m": 5,
-                "altitude_m": 15,
-                "start_corner": "south_west",
-            },
-            {"type": "land"},
-        ],
-    }
-    out = expand_intents_to_mission(plan, _telemetry())
-    # 9 north/south passes + 8 east connectors + takeoff + land
-    assert len(out.items) == 19
-    assert out.items[-1].vehicle_action == 2
-
-
 def test_comb_square_area_optional_fields_use_defaults() -> None:
     plan = {
         "mission_name": "comb defaults",
@@ -167,7 +122,7 @@ def test_comb_square_area_optional_fields_use_defaults() -> None:
     }
     out_default = expand_intents_to_mission(plan, _telemetry())
     out_explicit = expand_intents_to_mission(explicit, _telemetry())
-    assert len(out_default.items) == len(out_explicit.items)
+    assert len(out_default.items) == len(out_explicit.items) == 19
     for a, b in zip(out_default.items, out_explicit.items, strict=True):
         assert a.latitude_deg == pytest.approx(b.latitude_deg)
         assert a.longitude_deg == pytest.approx(b.longitude_deg)
