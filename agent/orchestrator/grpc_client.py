@@ -1,4 +1,5 @@
-import grpc
+"""Async gRPC client for the vehicle / companion ``InternalService`` stubs."""
+
 import grpc.aio
 from typing import Any
 
@@ -6,7 +7,6 @@ from .config import Settings
 from .protoc import internal_communication_pb2
 from .protoc import internal_communication_pb2_grpc
 
-# Defaults for a long‑lived client: PINGs keep the connection warm behind NATs / LBs.
 _DEFAULT_CHANNEL_OPTIONS: tuple[tuple[str, int], ...] = (
     ("grpc.keepalive_time_ms", 10_000),
     ("grpc.keepalive_timeout_ms", 5_000),
@@ -15,7 +15,17 @@ _DEFAULT_CHANNEL_OPTIONS: tuple[tuple[str, int], ...] = (
 
 
 class InternalGrpcClient:
-    """Async gRPC client for ``InternalService``. RPCs await without blocking the event loop."""
+    """Thin async wrapper around ``InternalService`` (telemetry, prompt, mission upload).
+
+    Uses an insecure channel with keepalive options suitable for NATs or load balancers.
+    Prefer TLS or Unix sockets where your deployment supports them.
+
+    Attributes:
+        channel: Underlying ``grpc.aio.Channel`` when you need manual control.
+
+    Raises:
+        ValueError: If ``settings.grpc_target`` is empty.
+    """
 
     def __init__(
         self,
@@ -40,14 +50,51 @@ class InternalGrpcClient:
         self,
         timeout: float | None = None,
     ) -> internal_communication_pb2.TelemetryResponse:
-        """Call ``GetTelemetry``; uses ``Settings.grpc_timeout_s`` when ``timeout`` is omitted."""
+        """Fetch latest vehicle telemetry.
+
+        Args:
+            timeout: RPC deadline in seconds; defaults to ``Settings.grpc_timeout_s``.
+        """
         t = self._settings.grpc_timeout_s if timeout is None else timeout
         return await self._stub.GetTelemetry(
             internal_communication_pb2.Empty(),
             timeout=t,
         )
 
+    async def get_prompt(
+        self,
+        timeout: float | None = None,
+    ) -> internal_communication_pb2.PromptResponse:
+        """Return the operator mission prompt string from the vehicle side.
+
+        Args:
+            timeout: RPC deadline in seconds; defaults to ``Settings.grpc_timeout_s``.
+        """
+        t = self._settings.grpc_timeout_s if timeout is None else timeout
+        return await self._stub.GetPrompt(
+            internal_communication_pb2.Empty(),
+            timeout=t,
+        )
+
+    async def start_mission(
+        self,
+        mission: internal_communication_pb2.MissionItemList,
+        timeout: float | None = None,
+    ) -> internal_communication_pb2.Empty:
+        """Upload a full mission (waypoint list) to the vehicle.
+
+        Args:
+            mission: Populated ``MissionItemList`` protobuf.
+            timeout: RPC deadline in seconds; defaults to ``Settings.grpc_timeout_s``.
+        """
+        t = self._settings.grpc_timeout_s if timeout is None else timeout
+        return await self._stub.StartMission(
+            mission,
+            timeout=t,
+        )
+
     async def close(self) -> None:
+        """Close the channel; safe to call multiple times from ``__aexit__``."""
         await self._channel.close()
 
     async def __aenter__(self) -> "InternalGrpcClient":

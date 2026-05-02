@@ -1,3 +1,5 @@
+"""Drone mission orchestrator: gRPC telemetry, LLM intents, waypoint expansion."""
+
 from .config import Settings
 
 __all__ = ["Settings", "InternalGrpcClient"]

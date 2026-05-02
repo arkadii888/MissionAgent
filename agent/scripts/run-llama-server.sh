@@ -10,7 +10,7 @@ if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck source=/dev/null
   . "$ENV_FILE"
-  set +a
+  set +ar
 fi
 
 BINARY_PATH="${BINARY_PATH:-$AGENT_DIR/llama.cpp/build/bin/llama-server}"
@@ -19,9 +19,9 @@ PROJ_PATH="${PROJ_PATH:-$AGENT_DIR/models/mmproj-F16.gguf}"
 PORT="${PORT:-8080}"
 NGL="${NGL:-99}"
 CTX_SIZE="${CTX_SIZE:-4096}"
-BATCH="${BATCH:-1024}"
+BATCH="${BATCH:-2048}"
 THREADS="${THREADS:-$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || sysctl -n hw.ncpu)}"
-PREDICT="${PREDICT:-1024}"
+PREDICT="${PREDICT:-2048}"
 TEMP="${TEMP:-1.0}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-64}"
@@ -29,6 +29,7 @@ JINJA="${JINJA:-1}"
 FLASH_ATTN="${FLASH_ATTN:-on}"
 CNV="${CNV:-1}"
 MLOCK="${MLOCK:-0}"
+REASONING="${REASONING:-off}"
 
 if [ ! -x "$BINARY_PATH" ]; then
   echo "llama-server binary not found or not executable:"
@@ -61,6 +62,7 @@ CMD=(
   --top-k "$TOP_K"
   -t "$THREADS"
   --flash-attn "$FLASH_ATTN"
+  --reasoning "$REASONING"
 )
 
 if [ "$JINJA" = "1" ]; then
