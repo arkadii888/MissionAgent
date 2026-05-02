@@ -93,3 +93,6 @@ agent/models/*
 !agent/models/.gitkeep
 
 llama_binaries/
+
+# Logs (JSONL pipelines; paths are under agent/)
+agent/logs/
