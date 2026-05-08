@@ -101,7 +101,7 @@ def handle_move(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     append_waypoint(
         ctx,
         vehicle_action=0,
-        is_fly_through=True,
+        is_fly_through=False,
         north_delta_m=north_m,
         east_delta_m=east_m,
     )

@@ -6,7 +6,6 @@ Adding an entry to :data:`INTENT_SPECS` updates both ``MISSION_INTENT_SCHEMA`` a
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
