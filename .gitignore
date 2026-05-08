@@ -89,7 +89,8 @@ uv.lock
 agent/llama.cpp/build/
 
 # Models
-agent/models/*
+agent/models/gemma-4-E2B-it-Q4_K_M.gguf
+agent/models/mmproj-F16.gguf
 !agent/models/.gitkeep
 
 llama_binaries/
