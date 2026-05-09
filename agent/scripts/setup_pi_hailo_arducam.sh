@@ -134,8 +134,13 @@ run_sudo apt-get install -y \
   pciutils \
   dkms \
   python3-dev \
-  libatlas-base-dev \
   pkg-config
+# libatlas-base-dev was common on older Raspberry Pi OS; Debian Trixie+ dropped it in favor of OpenBLAS.
+if apt_install_with_fallback libatlas-base-dev libopenblas-dev; then
+  ok "BLAS dev headers installed (ATLAS or OpenBLAS)"
+else
+  warn "Could not install libatlas-base-dev or libopenblas-dev; continuing (only needed for some native Python builds)"
+fi
 ok "Base tools installed"
 record_stage_time "${stage_start}" "APT refresh and base tools"
 PASS_ITEMS+=("Base tools installed")
