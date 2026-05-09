@@ -17,7 +17,10 @@ def build_system_prompt(max_waypoints: int = 32) -> str:
         "Use only schema-defined intent types. "
         "Use metric distances in meters and yaw in degrees. "
         "Prefer complete missions: include takeoff first and land last unless the user explicitly asks otherwise. "
-        "Keep values realistic and concise."
+        "Shorthand verbs such as \"return\", \"RTL\", \"go home\", and \"come back\" mean navigate to launch/home "
+        "before touchdown—emit safety_control with action return_home (see user-message examples); do not map that "
+        "to land alone unless the user only asks to land."
+        " Keep values realistic and concise."
     )
 
 
@@ -45,16 +48,27 @@ def build_user_prompt(
         "2) Prefer move_directional for world-frame compass movement.\n"
         "3) Use move_vertical for descend/down requests.\n"
         "4) Use turn_relative for turn around (180 degrees).\n"
-        "5) Use safety_control for stop/hold/abort/return-home requests.\n"
+        "5) Use safety_control for stop/hold/abort and for return-home: treat \"return\", \"RTL/RTB\", "
+        "\"go home\", \"come back\" as return to launch—not as a synonym for land alone.\n"
         "6) For comb_square_area: omit side_m to use the default footprint, or set side_m and optionally "
-        "lane_spacing_m, altitude_m, start_corner. Omit lane_spacing_m for default spacing or use a positive "
-        "fraction of side_m (e.g. side_m/4); never use 0 for lane spacing.\n"
+        "lane_spacing_m, altitude_m, start_corner. Omit lane_spacing_m so spacing is inferred from flight "
+        "AGL using the onboard camera footprint (approx. 84° cross-track FOV, 45° tilt, modest overlap "
+        "between legs); omit altitude_m inside comb_square_area unless you intentionally change altitude "
+        "for the sweep—otherwise cumulative altitude after takeoff is used. Explicit lane_spacing_m should "
+        "be a positive fraction of side_m (e.g. side_m/4); never use 0 for lane spacing. "
+        'If the user asks for an "WxH", "WxW", or "200x200" square in meters (same-edge search area), '
+        "set side_m to that edge length—for a square never substitute takeoff or leg distance numbers "
+        '(e.g. "20 m up" is altitude only, not the search square).\n'
         "7) Output only JSON matching schema (no markdown, no comments).\n"
         "Examples:\n"
         '- Input: "Take off to 20m, fly northeast 30m, then descend 5m and land."\n'
         '- Output: {"mission_name":"northeast descend","intents":[{"type":"takeoff","altitude_m":20},{"type":"move_directional","direction":"northeast","distance_m":30},{"type":"move_vertical","direction":"down","distance_m":5},{"type":"land"}]}\n'
         '- Input: "Take off, comb a square area, return home and land."\n'
         '- Output: {"mission_name":"square comb","intents":[{"type":"takeoff","altitude_m":15},{"type":"comb_square_area","side_m":40,"lane_spacing_m":5,"start_corner":"south_west"},{"type":"safety_control","action":"return_home"},{"type":"land"}]}\n'
+        '- Input: "Take off to 20m, go 100m northwest, comb a 20m square, then return."\n'
+        '- Output: {"mission_name":"northwest search return","intents":[{"type":"takeoff","altitude_m":20},{"type":"move_directional","direction":"northwest","distance_m":100},{"type":"comb_square_area","side_m":20},{"type":"safety_control","action":"return_home"},{"type":"land"}]}\n'
+        '- Input: "Fly 20m up, go 100m northwest, comb a 200x200 m square, return."\n'
+        '- Output: {"mission_name":"northwest wide search","intents":[{"type":"takeoff","altitude_m":20},{"type":"move_directional","direction":"northwest","distance_m":100},{"type":"comb_square_area","side_m":200},{"type":"safety_control","action":"return_home"},{"type":"land"}]}\n'
         '- Input: "Take off, turn around, hold position, then land."\n'
         '- Output: {"mission_name":"turn and hold","intents":[{"type":"takeoff","altitude_m":10},{"type":"turn_relative","maneuver":"turn_around"},{"type":"safety_control","action":"hold"},{"type":"land"}]}\n'
         '- Input: "Take off, comb a 5m square, then land." (no lane spacing given)\n'

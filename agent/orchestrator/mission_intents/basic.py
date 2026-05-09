@@ -41,6 +41,7 @@ _SAFETY_ACTION_SYNONYMS: dict[str, str] = {
     "pause": "hold",
     "abort": "abort",
     "cancel": "abort",
+    "return": "return_home",
     "return_home": "return_home",
     "return_to_home": "return_home",
     "rtl": "return_home",

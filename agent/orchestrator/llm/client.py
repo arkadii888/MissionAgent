@@ -71,6 +71,7 @@ class LlamaClient:
         }
         response = await asyncio.to_thread(self._post_chat_completions, payload)
         try:
+            self._log_finish_reason(response, "first attempt")
             content = self._extract_content_text(response)
             log.info("llama-server raw assistant content (first attempt):\n%s", content)
             parsed = self._parse_json_from_text(content)
@@ -79,6 +80,8 @@ class LlamaClient:
             return dict(parsed)
         except (ValueError, json.JSONDecodeError):
             retry_payload = dict(payload)
+            # Low max_tokens truncates structured JSON mid-stream ("Unterminated string"); escalate on repair attempts.
+            retry_payload["max_tokens"] = max(self._max_tokens, 1024)
             retry_payload["messages"] = [
                 {
                     "role": "system",
@@ -92,6 +95,7 @@ class LlamaClient:
             ]
             retry_payload["temperature"] = 0.0
             retry_response = await asyncio.to_thread(self._post_chat_completions, retry_payload)
+            self._log_finish_reason(retry_response, "retry")
             retry_content = self._extract_content_text(retry_response)
             log.info("llama-server raw assistant content (retry):\n%s", retry_content)
             try:
@@ -103,7 +107,7 @@ class LlamaClient:
                 return dict(retry_parsed)
             except (ValueError, json.JSONDecodeError):
                 final_payload = dict(retry_payload)
-                final_payload["max_tokens"] = max(self._max_tokens, 512)
+                final_payload["max_tokens"] = max(self._max_tokens, 2048)
                 final_payload["messages"] = [
                     {
                         "role": "system",
@@ -116,6 +120,7 @@ class LlamaClient:
                     {"role": "user", "content": user_prompt},
                 ]
                 final_response = await asyncio.to_thread(self._post_chat_completions, final_payload)
+                self._log_finish_reason(final_response, "final retry")
                 final_content = self._extract_content_text(final_response)
                 log.info("llama-server raw assistant content (final retry):\n%s", final_content)
                 final_parsed = self._parse_json_from_text(final_content)
@@ -150,6 +155,24 @@ class LlamaClient:
             return content
 
         raise ValueError(f"llama returned empty content payload: {response}")
+
+    @staticmethod
+    def _log_finish_reason(response: Mapping[str, Any], label: str) -> None:
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return
+        first = choices[0]
+        if not isinstance(first, Mapping):
+            return
+        fr = first.get("finish_reason")
+        if fr is None:
+            return
+        log.info("llama-server %s finish_reason=%s", label, fr)
+        if fr == "length":
+            log.warning(
+                "llama-server %s stopped at max_tokens (output truncated); raise LLM_MAX_TOKENS if JSON parse fails",
+                label,
+            )
 
     def _parse_json_from_text(self, text: str) -> Any:
         """Parse JSON, stripping optional ```json fences and scanning for a first ``{...}`` object."""

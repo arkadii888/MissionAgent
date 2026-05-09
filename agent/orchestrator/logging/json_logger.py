@@ -5,7 +5,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent.orchestrator.protoc import internal_communication_pb2
 
 
 @dataclass(frozen=True)
@@ -43,3 +46,14 @@ class JsonPipelineLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def log_mission_multipoint_geojson(
+    logger: JsonPipelineLogger,
+    trace_id: str,
+    mission: "internal_communication_pb2.MissionItemList",
+) -> None:
+    """Append a ``mission_multipoint_geojson`` record; payload is a GeoJSON MultiPoint geometry."""
+    from agent.orchestrator.mission_intents.proto import mission_list_to_multipoint_geometry
+
+    logger.log("mission_multipoint_geojson", trace_id, mission_list_to_multipoint_geometry(mission))

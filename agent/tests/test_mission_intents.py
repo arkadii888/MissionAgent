@@ -2,7 +2,9 @@ import math
 
 import pytest
 
+from agent.orchestrator.mission_intents.area_patterns import comb_lane_spacing_from_altitude_m
 from agent.orchestrator.mission_intents.expand import build_default_registry, expand_intents_to_mission
+from agent.orchestrator.mission_intents.proto import mission_list_to_multipoint_geometry
 
 
 def _telemetry() -> dict[str, float]:
@@ -40,6 +42,12 @@ def test_expand_intents_to_mission_basic_flow() -> None:
     expected_lat_inc = math.degrees(10.0 / 6_378_137.0)
     actual_lat_inc = out.items[2].latitude_deg - origin_lat
     assert abs(actual_lat_inc - expected_lat_inc) < 1e-7
+
+    mp = mission_list_to_multipoint_geometry(out)
+    assert mp["type"] == "MultiPoint"
+    assert len(mp["coordinates"]) == len(out.items)
+    for i, item in enumerate(out.items):
+        assert mp["coordinates"][i] == [item.longitude_deg, item.latitude_deg]
 
 
 def test_registry_unknown_intent_fails() -> None:
@@ -98,15 +106,7 @@ def test_safety_preempts_following_movement() -> None:
     assert out.items[2].vehicle_action == 2
 
 
-def test_comb_square_area_optional_fields_use_defaults() -> None:
-    plan = {
-        "mission_name": "comb defaults",
-        "intents": [
-            {"type": "takeoff", "altitude_m": 20},
-            {"type": "comb_square_area"},
-            {"type": "land"},
-        ],
-    }
+def test_comb_square_area_explicit_lane_spacing_matches_fixed_pattern() -> None:
     explicit = {
         "mission_name": "comb explicit defaults",
         "intents": [
@@ -120,10 +120,46 @@ def test_comb_square_area_optional_fields_use_defaults() -> None:
             {"type": "land"},
         ],
     }
-    out_default = expand_intents_to_mission(plan, _telemetry())
-    out_explicit = expand_intents_to_mission(explicit, _telemetry())
-    assert len(out_default.items) == len(out_explicit.items) == 19
-    for a, b in zip(out_default.items, out_explicit.items, strict=True):
-        assert a.latitude_deg == pytest.approx(b.latitude_deg)
-        assert a.longitude_deg == pytest.approx(b.longitude_deg)
-        assert a.relative_altitude_m == pytest.approx(b.relative_altitude_m)
+    out = expand_intents_to_mission(explicit, _telemetry())
+    assert len(out.items) == 19
+
+
+def test_comb_square_area_auto_lane_spacing_uses_agl_geometry() -> None:
+    """Omit lane_spacing_m: spacing follows Arducam-style swath × (1 − overlap) at mission AGL."""
+    plan = {
+        "mission_name": "comb inferred spacing",
+        "intents": [
+            {"type": "takeoff", "altitude_m": 20},
+            {"type": "comb_square_area", "side_m": 40},
+            {"type": "land"},
+        ],
+    }
+    out = expand_intents_to_mission(plan, _telemetry())
+    expected_step = comb_lane_spacing_from_altitude_m(20.0)
+    assert expected_step > 40.0
+    # Round(40 / step) ⇒ one lane ⇒ takeoff + 3 comb legs + land.
+    assert len(out.items) == 5
+
+
+def test_comb_lane_spacing_from_altitude_m_golden() -> None:
+    lane = comb_lane_spacing_from_altitude_m(20.0)
+    assert lane == pytest.approx(43.29436277609406)
+
+
+def test_safety_control_return_action_is_return_home() -> None:
+    plan = {
+        "mission_name": "shorthand return",
+        "intents": [
+            {"type": "takeoff", "altitude_m": 10},
+            {"type": "move_directional", "direction": "north", "distance_m": 50},
+            {"type": "safety_control", "action": "return"},
+            {"type": "land"},
+        ],
+    }
+    out = expand_intents_to_mission(plan, _telemetry())
+    assert len(out.items) == 4
+    origin_lat = _telemetry()["latitude_deg"]
+    origin_lon = _telemetry()["longitude_deg"]
+    assert abs(out.items[-2].latitude_deg - origin_lat) < 1e-5
+    assert abs(out.items[-2].longitude_deg - origin_lon) < 1e-5
+    assert out.items[-1].vehicle_action == 2

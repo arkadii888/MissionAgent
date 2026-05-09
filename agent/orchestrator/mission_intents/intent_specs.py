@@ -173,7 +173,10 @@ INTENT_SPECS: tuple[IntentSpec, ...] = (
             "required": ["type", "action"],
             "properties": {
                 "type": {"const": "safety_control"},
-                "action": {"type": "string", "enum": ["stop", "hold", "abort", "return_home"]},
+                "action": {
+                    "type": "string",
+                    "enum": ["stop", "hold", "abort", "return_home", "return"],
+                },
             },
             "additionalProperties": False,
         },
