@@ -13,7 +13,7 @@ from agent.orchestrator.config import Settings
 from agent.orchestrator.grpc_client import InternalGrpcClient
 from agent.orchestrator.llm.client import LlamaClient
 from agent.orchestrator.llm.prompts import build_system_prompt, build_user_prompt
-from agent.orchestrator.logging import JsonPipelineLogger
+from agent.orchestrator.logging import JsonPipelineLogger, log_mission_multipoint_geojson
 from agent.orchestrator.mission_intents import expand_intents_to_mission
 from agent.orchestrator.mission_intents.proto import mission_list_to_ordered_dict
 from agent.orchestrator.state import MissionState, TelemetryCache
@@ -145,6 +145,7 @@ async def _plan_from_prompt(
                 "mission_proto": mission_list_to_ordered_dict(proto),
             },
         )
+        log_mission_multipoint_geojson(json_logger, trace_id, proto)
     except Exception as exc:
         log.exception("expand_intents_to_mission: %s", exc)
         json_logger.log(
@@ -183,8 +184,9 @@ async def _telemetry_poll_loop(
 async def run_mission_test_loop() -> None:
     """Run until interrupt: poll prompts, plan missions, optionally upload via gRPC.
 
-    With ``LOCAL_TEST_MODE`` set, reads prompts from stdin (or ``LOCAL_TEST_PROMPT`` once) and
-    skips ``StartMission``. Otherwise opens gRPC and sends each new prompt string as one mission.
+    With ``LOCAL_TEST_MODE`` set, reads each mission prompt from stdin (blocking ``input``) and
+    skips ``StartMission``. Non-interactive use: pipe or redirect stdin (e.g. ``echo '...' | uv run ...``).
+    Otherwise opens gRPC and sends each new prompt string as one mission.
 
     Repeated identical prompts in gRPC mode are ignored for one process lifetime so a failing
     plan does not spin forever.
@@ -224,7 +226,6 @@ async def run_mission_test_loop() -> None:
 
     if local_test_mode:
         telemetry_map = _load_local_test_telemetry()
-        env_prompt = (os.getenv("LOCAL_TEST_PROMPT") or "").strip()
         log.info(
             "Running in LOCAL_TEST_MODE with fake telemetry lat=%.7f lon=%.7f rel_alt=%.2f abs_alt=%.2f",
             telemetry_map["latitude_deg"],
@@ -233,13 +234,10 @@ async def run_mission_test_loop() -> None:
             telemetry_map["absolute_altitude_m"],
         )
         while True:
-            prompt_text = env_prompt
-            env_prompt = ""
-            if not prompt_text:
-                prompt_text = await asyncio.to_thread(
-                    input, "Mission prompt (empty to exit LOCAL_TEST_MODE): "
-                )
-                prompt_text = prompt_text.strip()
+            prompt_text = await asyncio.to_thread(
+                input, "Mission prompt (empty to exit LOCAL_TEST_MODE): "
+            )
+            prompt_text = prompt_text.strip()
             if not prompt_text:
                 log.info("LOCAL_TEST_MODE prompt empty; stopping.")
                 return

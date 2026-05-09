@@ -2,6 +2,7 @@
 
 import math
 from collections import OrderedDict
+from typing import Any
 
 from agent.orchestrator.protoc import internal_communication_pb2
 
@@ -128,3 +129,13 @@ def mission_list_to_ordered_dict(
 ) -> dict[str, list[OrderedDict[str, float | int | bool | str]]]:
     """Marshal a full mission the same way as :func:`mission_item_to_ordered_dict`."""
     return {"items": [mission_item_to_ordered_dict(item) for item in result.items]}
+
+
+def mission_list_to_multipoint_geometry(
+    result: internal_communication_pb2.MissionItemList,
+) -> dict[str, Any]:
+    """GeoJSON-style MultiPoint geometry (positions are [longitude, latitude] in degrees)."""
+    return {
+        "type": "MultiPoint",
+        "coordinates": [[item.longitude_deg, item.latitude_deg] for item in result.items],
+    }

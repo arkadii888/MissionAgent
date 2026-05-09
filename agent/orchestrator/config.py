@@ -44,7 +44,7 @@ class Settings:
             grpc_timeout_s=float(os.getenv("GRPC_TIMEOUT_S", "4.0")),
             telemetry_poll_hz=float(os.getenv("TELEMETRY_POLL_HZ", "2.0")),
             llm_timeout_s=float(os.getenv("LLM_TIMEOUT_S", "120.0")),
-            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512")),
+            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
             max_waypoints=int(os.getenv("MAX_WAYPOINTS", "32")),
             mission_json_log_enabled=os.getenv("MISSION_JSON_LOG_ENABLED", "1").strip().lower()
