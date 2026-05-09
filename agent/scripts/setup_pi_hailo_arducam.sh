@@ -88,6 +88,29 @@ camera_list_cmd() {
   return 1
 }
 
+# libcamera exposes cameras to apps when the login user can access platform device nodes (often video/render groups).
+ensure_camera_device_groups() {
+  local tgt=""
+  if [ "$(id -u)" -eq 0 ]; then
+    tgt="${SUDO_USER:-}"
+  else
+    tgt="${USER:-}"
+  fi
+  if [ -z "${tgt}" ] || [ "${tgt}" = "root" ]; then
+    return 0
+  fi
+  for g in video render; do
+    if id -nG "${tgt}" 2>/dev/null | tr ' ' '\n' | grep -qx "${g}"; then
+      continue
+    fi
+    if run_sudo usermod -aG "${g}" "${tgt}"; then
+      ok "Added user ${tgt} to group ${g} (log out/in or reboot may be needed for the session)"
+    else
+      warn "Could not add ${tgt} to group ${g}"
+    fi
+  done
+}
+
 ensure_uv() {
   if command -v uv >/dev/null 2>&1; then
     return 0
@@ -154,6 +177,7 @@ else
   WARN_ITEMS+=("Could not install libcamera/rpicam CLI apps")
 fi
 ok "Camera Python stack installed"
+ensure_camera_device_groups
 record_stage_time "${stage_start}" "Camera stack install"
 PASS_ITEMS+=("Picamera2 installed")
 
@@ -243,9 +267,43 @@ record_stage_time "${stage_start}" "Hailo PCIe checks"
 
 step "Picamera2 frame capture smoke test"
 stage_start="$(date +%s)"
-if "${VENV_PATH}/bin/python" - <<'PY'
+smoke_picam2_py="$(mktemp)"
+cleanup_picam_smoke() {
+  rm -f "${smoke_picam2_py}"
+}
+trap cleanup_picam_smoke EXIT
+
+cat >"${smoke_picam2_py}" <<'PY'
+import sys
+import time
 from picamera2 import Picamera2
-cam = Picamera2()
+
+infos = []
+for attempt in range(1, 6):
+    infos = Picamera2.global_camera_info()
+    if infos:
+        break
+    print(
+        "Picamera2.global_camera_info() empty (attempt %d/5); waiting for cameras..."
+        % (attempt,),
+        file=sys.stderr,
+    )
+    time.sleep(1.5)
+
+if not infos:
+    print(
+        "No cameras visible to Picamera2 (CLI may still list cameras). ",
+        file=sys.stderr,
+        end="",
+    )
+    print(
+        "Typical fixes: ensure this user is in groups 'video' and 'render', then log out and back in; "
+        "or run once with: sg video -c 'YOUR_VENV/bin/python SCRIPT.py'",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+cam = Picamera2(camera_num=0)
 cfg = cam.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
 cam.configure(cfg)
 cam.start()
@@ -255,13 +313,23 @@ cam.close()
 assert frame is not None and frame.size > 0
 print("Frame shape:", frame.shape)
 PY
-then
+
+if "${VENV_PATH}/bin/python" "${smoke_picam2_py}"; then
   ok "Picamera2 captured a frame successfully"
   PASS_ITEMS+=("Picamera2 capture smoke test passed")
+elif \
+  [ "$(id -u)" -ne 0 ] \
+    && command -v sg >/dev/null 2>&1 \
+    && sg video -c "$(printf '%q %q' "${VENV_PATH}/bin/python" "${smoke_picam2_py}")"
+then
+  ok "Picamera2 captured via sg video (session did not yet have video group)"
+  PASS_ITEMS+=("Picamera2 capture smoke test passed (sg video)")
 else
   fail "Picamera2 frame capture failed"
   FAIL_ITEMS+=("Picamera2 capture smoke test failed")
 fi
+cleanup_picam_smoke
+trap - EXIT
 record_stage_time "${stage_start}" "Picamera2 smoke test"
 
 step "Hailo Python binding smoke test"
@@ -310,6 +378,8 @@ TOTAL_ELAPSED="$(( $(date +%s) - START_TS ))"
 echo "Total elapsed: ${TOTAL_ELAPSED}s"
 echo "==============================================="
 echo "Remediation hints:"
+echo "  - SSH 'Connection reset by peer' after 'sudo reboot' is normal: the Pi restarted; reconnect when it is back."
+echo "  - Picamera2 sees no cameras but rpicam does: add user to groups video + render, reboot or log out/in, or rerun smoke with 'sg video'."
 echo "  - Camera not found or capture fails: check CSI cable orientation, then run 'rpicam-hello --list-cameras'."
 echo "  - Hailo not visible on PCIe: reseat Hailo module, confirm PCIe ribbon/hat wiring, reboot, then run 'lspci | grep -i hailo'."
 echo "  - Hailo runtime not ready: reboot, then run 'hailortcli fw-control identify' and check it reports HAILO8/HAILO8L."
