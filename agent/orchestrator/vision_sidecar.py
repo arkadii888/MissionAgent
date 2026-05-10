@@ -180,8 +180,8 @@ class _OverlayRecorder:
                 dets = scale_detections_xyxy(dets, sx, sy)
 
             self._person.tick(dets)
-            annotate_frame(frame, dets, image_is_bgr=self._cam.frames_are_bgr)
-            if self._cam.frames_are_bgr:
+            annotate_frame(frame, dets, image_is_bgr=self._cam.buffer_is_bgr())
+            if self._cam.buffer_is_bgr():
                 to_write = frame
             else:
                 to_write = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)

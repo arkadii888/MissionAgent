@@ -39,15 +39,32 @@ class CameraManager:
         self._capture_stream_name = "lores"
         self._stream_mode: str | None = None
         self.thread: threading.Thread | None = None
-        #: True when ``capture_array`` returns OpenCV-native BGR (e.g. ``BGR888`` stream).
+        #: True when ``capture_array`` numpy is OpenCV-style BGR (channel 0 = blue).
+        #: Picamera2 maps stream **RGB888** → BGR memory and **BGR888** → RGB memory
+        #: (see ``picamera2`` helpers ``_get_pil_mode`` / JPEG ``FORMAT_TABLE``).
         self.frames_are_bgr: bool = False
         self._pixel_format: str = "RGB888"
 
     def _pixel_format_try_order(self) -> list[str]:
-        """BGR first so :class:`~cv2.VideoWriter` paths need no RGB↔BGR swap."""
+        """Prefer ``RGB888``: ``capture_array`` is BGR in memory (native for :class:`~cv2.VideoWriter`)."""
+        if os.environ.get("ARDUCAM_FORCE_BGR888", "").strip().lower() in ("1", "true", "yes"):
+            return ["BGR888", "RGB888"]
         if os.environ.get("ARDUCAM_FORCE_RGB888", "").strip().lower() in ("1", "true", "yes"):
             return ["RGB888", "BGR888"]
-        return ["BGR888", "RGB888"]
+        return ["RGB888", "BGR888"]
+
+    def buffer_is_bgr(self) -> bool:
+        """
+        Whether ``capture_array`` frames are BGR for OpenCV / VideoWriter.
+
+        Override with ``ARDUCAM_PIXEL_LAYOUT=bgr|rgb`` if colors are wrong for your ISP build.
+        """
+        raw = os.environ.get("ARDUCAM_PIXEL_LAYOUT", "").strip().lower()
+        if raw in ("bgr", "bgr888", "opencv"):
+            return True
+        if raw in ("rgb", "rgb888"):
+            return False
+        return self.frames_are_bgr
 
     def _reset_camera(self) -> None:
         from picamera2 import Picamera2
@@ -86,7 +103,7 @@ class CameraManager:
                 self._capture_stream_name = "lores"
                 self._stream_mode = "dual"
                 self._pixel_format = px
-                self.frames_are_bgr = px == "BGR888"
+                self.frames_are_bgr = px == "RGB888"
                 dual_ok = True
                 log.info("Picamera2 dual-stream using pixel format %s.", px)
                 break
@@ -114,7 +131,7 @@ class CameraManager:
                     self._capture_stream_name = "main"
                     self._stream_mode = "single_preview"
                     self._pixel_format = px
-                    self.frames_are_bgr = px == "BGR888"
+                    self.frames_are_bgr = px == "RGB888"
                     single_ok = True
                     log.info("Picamera2 single-stream using pixel format %s.", px)
                     break
@@ -144,11 +161,11 @@ class CameraManager:
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.thread.start()
         log.info(
-            "Camera capture thread started (mode=%s, dequeue=%r, format=%s, bgr_native=%s).",
+            "Camera capture thread started (mode=%s, dequeue=%r, format=%s, buffer_is_bgr=%s).",
             self._stream_mode,
             self._capture_stream_name,
             self._pixel_format,
-            self.frames_are_bgr,
+            self.buffer_is_bgr(),
         )
 
     def _capture_loop(self) -> None:

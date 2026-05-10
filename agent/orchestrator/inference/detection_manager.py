@@ -290,7 +290,12 @@ class DetectionManager:
                 continue
 
             infer_rgb = frame
-            if getattr(cam, "frames_are_bgr", False):
+            buf_bgr = (
+                cam.buffer_is_bgr()
+                if hasattr(cam, "buffer_is_bgr")
+                else getattr(cam, "frames_are_bgr", False)
+            )
+            if buf_bgr:
                 infer_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             shape = tuple(int(x) for x in infer_rgb.shape)
