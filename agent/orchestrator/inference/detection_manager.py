@@ -260,10 +260,10 @@ class DetectionManager:
 
     def overlay_scale_for_preview(self) -> tuple[float, float] | None:
         """
-        Scale full-res detections onto the lores MJPEG frame when inference used `main`.
+        Scale full-res detections onto the lores preview/recorder frame when inference used `main`.
 
         When `DETECTION_USE_MAIN_STREAM` is off (default), we infer on `latest_frame`
-        (same resolution as `/video`), so coordinates already match — do not scale.
+        (same resolution as the Picamera2 lores preview thread), so coordinates already match — do not scale.
         """
         if self._backend != "hailo" or self._cam is None:
             return None

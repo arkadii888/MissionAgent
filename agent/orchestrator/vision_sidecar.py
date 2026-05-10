@@ -228,11 +228,8 @@ def start_arducam_vision() -> VisionRuntime:
     configure_vision_environment()
     run_rpicam_health_check()
 
-    video_dir = (
-        Path(os.environ.get("ARDUCAM_VIDEO_DIR", _DEFAULT_VIDEO_DIR))
-        .expandvars()
-        .expanduser()
-    )
+    raw_video_dir = os.environ.get("ARDUCAM_VIDEO_DIR", _DEFAULT_VIDEO_DIR)
+    video_dir = Path(os.path.expandvars(os.path.expanduser(raw_video_dir)))
     fps = float(os.environ.get("ARDUCAM_RECORD_FPS", "15"))
     person_conf = float(os.environ.get("ARDUCAM_PERSON_CONF", "0.5"))
     person_frames = int(os.environ.get("ARDUCAM_PERSON_FRAMES", "3"))
