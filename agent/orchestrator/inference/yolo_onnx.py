@@ -7,6 +7,7 @@ per row: x1, y1, x2, y2, confidence, class_id (in letterboxed input space).
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 import cv2
@@ -61,6 +62,49 @@ class Detection:
     xyxy: tuple[float, float, float, float]  # x1, y1, x2, y2 in original image pixels
 
 
+def scale_detections_xyxy(
+    dets: list[Detection], sx: float, sy: float
+) -> list[Detection]:
+    """Scale box coordinates (e.g. full-frame → preview stream)."""
+    out: list[Detection] = []
+    for d in dets:
+        x1, y1, x2, y2 = d.xyxy
+        out.append(
+            Detection(
+                class_id=d.class_id,
+                class_name=d.class_name,
+                confidence=d.confidence,
+                xyxy=(x1 * sx, y1 * sy, x2 * sx, y2 * sy),
+            )
+        )
+    return out
+
+
+def nms_xyxy(
+    boxes_xyxy: np.ndarray,
+    scores: np.ndarray,
+    iou_threshold: float,
+) -> np.ndarray:
+    """Return indices to keep after single-class NMS. boxes_xyxy Nx4, scores N."""
+    n = int(boxes_xyxy.shape[0])
+    if n == 0:
+        return np.array([], dtype=np.int64)
+    rects: list[list[float]] = []
+    for i in range(n):
+        x1, y1, x2, y2 = boxes_xyxy[i].tolist()
+        rects.append([float(x1), float(y1), float(x2 - x1), float(y2 - y1)])
+    idx = cv2.dnn.NMSBoxes(
+        rects,
+        scores.tolist(),
+        score_threshold=0.0,
+        nms_threshold=float(iou_threshold),
+    )
+    if idx is None or len(idx) == 0:
+        return np.array([], dtype=np.int64)
+    flat = np.asarray(idx).reshape(-1)
+    return flat.astype(np.int64, copy=False)
+
+
 class Yolo26OnnxDetector:
     def __init__(
         self,
@@ -70,6 +114,10 @@ class Yolo26OnnxDetector:
         providers: list[str] | None = None,
     ) -> None:
         path = model_path or os.environ.get("YOLO_ONNX_PATH", "models/yolo26n.onnx")
+        p = Path(path)
+        if not p.is_absolute():
+            p = (Path(__file__).resolve().parents[2] / p).resolve()
+        path = str(p)
         if not os.path.isfile(path):
             raise FileNotFoundError(
                 f"ONNX model not found: {path}. Set YOLO_ONNX_PATH or place model in models/."
@@ -86,9 +134,13 @@ class Yolo26OnnxDetector:
         inp = self._session.get_inputs()[0]
         self._input_name = inp.name
         shape = inp.shape
-        # static export: [1, 3, 640, 640]
+        # static export is commonly [1, 3, 640, 640], but some models are fixed-batch
+        # (e.g. [8, 3, 640, 640]). Keep track of required input batch for fallback safety.
+        self._in_batch = 1
         if len(shape) == 4 and isinstance(shape[2], int) and isinstance(shape[3], int):
             self._in_h, self._in_w = shape[2], shape[3]
+            if isinstance(shape[0], int) and shape[0] > 0:
+                self._in_batch = int(shape[0])
         else:
             self._in_h = self._in_w = _DEFAULT_IMGSZ
 
@@ -109,13 +161,17 @@ class Yolo26OnnxDetector:
         im = np.ascontiguousarray(im, dtype=np.float32)
         im /= 255.0
         batch = np.expand_dims(im, axis=0)
+        if self._in_batch > 1:
+            # Some exported ONNX graphs require fixed batch (e.g. 8). Replicate the
+            # same frame to satisfy the static shape and parse detections for slot 0.
+            batch = np.repeat(batch, self._in_batch, axis=0)
 
         outs = self._session.run(None, {self._input_name: batch})
         if not outs:
             return []
 
         raw = outs[0]
-        dets = self._parse_e2e(raw)
+        dets = self._parse_e2e(raw, batch_index=0)
         if dets is None:
             raise ValueError(
                 "Unexpected ONNX output shape; expected YOLO26 end-to-end (N, 300, 6) or compatible."
@@ -144,13 +200,16 @@ class Yolo26OnnxDetector:
             )
         return out
 
-    def _parse_e2e(self, raw: np.ndarray) -> np.ndarray | None:
+    def _parse_e2e(self, raw: np.ndarray, batch_index: int = 0) -> np.ndarray | None:
         """
         YOLO26 end-to-end: (1, max_det, 6) with [x1,y1,x2,y2,conf,class].
         Rows may be padded; filter by confidence later.
         """
         if raw.ndim != 3 or raw.shape[2] < 6:
             return None
-        # (1, 300, 6) -> (n, 6)
-        d = raw[0]
+        # (B, max_det, 6+) -> (max_det, 6+) for one frame.
+        if raw.shape[0] <= 0:
+            return None
+        bi = min(max(int(batch_index), 0), raw.shape[0] - 1)
+        d = raw[bi]
         return d.astype(np.float32, copy=False)

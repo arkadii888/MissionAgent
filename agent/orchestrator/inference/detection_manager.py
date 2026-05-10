@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import threading
@@ -13,20 +14,21 @@ import numpy as np
 from .yolo_hailo import hailo_platform_available
 from .yolo_onnx import Detection, Yolo26OnnxDetector
 
-
-def _default_yolo_hef_path() -> str:
-    return str(Path(__file__).resolve().parents[2] / "models" / "yolo26n_b8.hef")
-
-
-def _effective_hef_path() -> str:
-    raw = os.environ.get("YOLO_HEF_PATH", "").strip()
-    return raw if raw else _default_yolo_hef_path()
-
 logger = logging.getLogger(__name__)
 
 _HISTORY_MAX = 100
 _FPS_EMA_ALPHA = 0.15
 _LOG_INTERVAL_SEC = 1.0
+_AGENT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_model_path(path: str | None) -> str | None:
+    if not path:
+        return path
+    p = Path(path)
+    if p.is_absolute():
+        return str(p)
+    return str((_AGENT_ROOT / p).resolve())
 
 
 @dataclass
@@ -52,17 +54,25 @@ class PipelineDebugStats:
     last_detection_count: int
     last_inference_at_iso: str | None
     last_error: str | None
+    hailo_runtime: dict[str, Any] | None = None
 
 
 def _create_detector(
     model_path: str | None,
+    hef_path: str | None = None,
 ) -> tuple[Any | None, str]:
     """
     YOLO_BACKEND=auto|onnx|hailo (default auto).
-    Hailo: YOLO_HEF_PATH (default repo agent/models/yolo26n_b8.hef). ONNX: YOLO_ONNX_PATH / model_path.
+    Hailo: YOLO_HEF_PATH (default models/yolo26n_b8.hef). ONNX: YOLO_ONNX_PATH / model_path.
     """
     backend_pref = os.environ.get("YOLO_BACKEND", "auto").strip().lower()
-    hef_path = _effective_hef_path()
+    selected_hef_path = _resolve_model_path(
+        hef_path
+        or os.environ.get(
+        "YOLO_HEF_PATH", "models/yolo26n_b8.hef"
+        )
+    )
+    model_path = _resolve_model_path(model_path)
 
     if backend_pref == "onnx":
         try:
@@ -75,7 +85,7 @@ def _create_detector(
         from .yolo_hailo import YoloHailoDetector
 
         try:
-            return YoloHailoDetector(hef_path=hef_path), "hailo"
+            return YoloHailoDetector(hef_path=selected_hef_path), "hailo"
         except Exception as e:
             print(f"YOLO Hailo failed to initialize: {e}")
             return None, "none"
@@ -83,11 +93,11 @@ def _create_detector(
     if backend_pref not in ("auto", "", "default"):
         print(f"Unknown YOLO_BACKEND={backend_pref!r}; using auto.")
 
-    if hailo_platform_available() and os.path.isfile(hef_path):
+    if hailo_platform_available() and os.path.isfile(selected_hef_path):
         from .yolo_hailo import YoloHailoDetector
 
         try:
-            return YoloHailoDetector(hef_path=hef_path), "hailo"
+            return YoloHailoDetector(hef_path=selected_hef_path), "hailo"
         except Exception as e:
             print(f"Hailo unavailable ({e}); falling back to ONNX.")
 
@@ -101,7 +111,9 @@ def _create_detector(
 class DetectionManager:
     """Background thread: runs YOLO on latest camera frame (drops frames if inference is slower)."""
 
-    def __init__(self, model_path: str | None = None) -> None:
+    def __init__(
+        self, model_path: str | None = None, hef_path: str | None = None
+    ) -> None:
         self.latest: list[Detection] = []
         self.lock = threading.Lock()
         self.running = False
@@ -128,11 +140,34 @@ class DetectionManager:
             "true",
             "yes",
         )
+        self._debug_frame_stats = os.environ.get("DETECTION_DEBUG_STATS", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self._jsonl_path = os.environ.get("DETECTION_JSONL_PATH", "").strip()
+        self._jsonl_fp: Any = None
+        self._cam: Any | None = None
+        self._use_main_stream = os.environ.get("DETECTION_USE_MAIN_STREAM", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
 
-        self.detector, self._backend = _create_detector(model_path)
+        self.detector, self._backend = _create_detector(model_path, hef_path)
 
     def get_debug_stats(self) -> PipelineDebugStats:
         with self.lock:
+            hailo_rt: dict[str, Any] | None = None
+            if (
+                self._backend == "hailo"
+                and self.detector is not None
+                and hasattr(self.detector, "get_runtime_info")
+            ):
+                try:
+                    hailo_rt = self.detector.get_runtime_info()
+                except Exception:
+                    logger.exception("get_runtime_info failed")
             return PipelineDebugStats(
                 running=self.running,
                 backend=self._backend,
@@ -153,6 +188,7 @@ class DetectionManager:
                 last_detection_count=self._last_detection_count,
                 last_inference_at_iso=self._last_inference_at_iso,
                 last_error=self._last_error,
+                hailo_runtime=hailo_rt,
             )
 
     def get_detection_history(self) -> list[DetectionSnapshot]:
@@ -162,6 +198,9 @@ class DetectionManager:
     def start(self, cam: Any) -> None:
         if self.detector is None:
             return
+        self._cam = cam
+        if self._jsonl_path:
+            self._jsonl_fp = open(self._jsonl_path, "a", encoding="utf-8")
         self.running = True
         self._thread = threading.Thread(target=self._loop, args=(cam,), daemon=True)
         self._thread.start()
@@ -201,11 +240,47 @@ class DetectionManager:
         logger.info(msg)
         print(msg, flush=True)
 
+    def _acquire_frame(self, cam: Any) -> np.ndarray | None:
+        """
+        Prefer non-blocking preview-frame copies for API responsiveness.
+        Opt-in full-res main captures with DETECTION_USE_MAIN_STREAM=1.
+        """
+        if (
+            self._use_main_stream
+            and
+            self._backend == "hailo"
+            and getattr(cam, "_stream_mode", None) == "dual"
+            and hasattr(cam, "capture_for_detection")
+        ):
+            return cam.capture_for_detection()
+        with cam.lock:
+            if cam.latest_frame is None:
+                return None
+            return cam.latest_frame.copy()
+
+    def overlay_scale_for_preview(self) -> tuple[float, float] | None:
+        """
+        Scale full-res detections onto the lores MJPEG frame when inference used `main`.
+
+        When `DETECTION_USE_MAIN_STREAM` is off (default), we infer on `latest_frame`
+        (same resolution as `/video`), so coordinates already match — do not scale.
+        """
+        if self._backend != "hailo" or self._cam is None:
+            return None
+        if not self._use_main_stream:
+            return None
+        if getattr(self._cam, "_stream_mode", None) != "dual":
+            return None
+        cw, ch = self._cam.capture_size
+        dw, dh = self._cam.stream_display_size
+        if cw <= 0 or ch <= 0:
+            return None
+        return (dw / cw, dh / ch)
+
     def _loop(self, cam: Any) -> None:
         assert self.detector is not None
         while self.running:
-            with cam.lock:
-                frame = cam.latest_frame
+            frame = self._acquire_frame(cam)
             if frame is None:
                 with self.lock:
                     self._frames_waited_none += 1
@@ -215,7 +290,7 @@ class DetectionManager:
             shape = tuple(int(x) for x in frame.shape)
             mean_rgb: tuple[float, float, float] | None = None
             std_rgb: tuple[float, float, float] | None = None
-            if frame.ndim == 3 and frame.shape[2] == 3:
+            if self._debug_frame_stats and frame.ndim == 3 and frame.shape[2] == 3:
                 f = frame.astype(np.float64)
                 m = f.reshape(-1, 3).mean(axis=0)
                 s = f.reshape(-1, 3).std(axis=0)
@@ -238,6 +313,7 @@ class DetectionManager:
 
             with self.lock:
                 self._frames_processed += 1
+                frame_idx = self._frames_processed
                 self._last_frame_shape = shape
                 self._last_frame_mean_rgb = mean_rgb
                 self._last_frame_std_rgb = std_rgb
@@ -252,13 +328,41 @@ class DetectionManager:
                 self.latest = dets
                 self._append_history(dets)
 
+            if self._jsonl_fp is not None:
+                payload = {
+                    "ts": now_iso,
+                    "frame": frame_idx,
+                    "dets": [
+                        {
+                            "xyxy": [round(x, 2) for x in d.xyxy],
+                            "confidence": round(d.confidence, 4),
+                            "class_id": d.class_id,
+                        }
+                        for d in dets
+                    ],
+                }
+                try:
+                    self._jsonl_fp.write(json.dumps(payload) + "\n")
+                    self._jsonl_fp.flush()
+                except OSError as e:
+                    logger.warning("JSONL write failed: %s", e)
+
             self._maybe_console_log()
+            # Yield briefly so API endpoints remain responsive under heavy inference.
+            time.sleep(0.001)
 
     def stop(self) -> None:
         self.running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._jsonl_fp is not None:
+            try:
+                self._jsonl_fp.close()
+            except OSError:
+                pass
+            self._jsonl_fp = None
+        self._cam = None
         det = self.detector
         if det is not None and hasattr(det, "close"):
             det.close()

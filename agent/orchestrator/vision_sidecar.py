@@ -13,7 +13,7 @@ import cv2
 
 from agent.orchestrator.camera_manager import CameraManager
 from agent.orchestrator.inference.detection_manager import DetectionManager
-from agent.orchestrator.inference.yolo_onnx import Detection
+from agent.orchestrator.inference.yolo_onnx import Detection, scale_detections_xyxy
 from agent.orchestrator.vision_overlay import annotate_frame
 
 log = logging.getLogger(__name__)
@@ -174,6 +174,11 @@ class _OverlayRecorder:
             with self._detector.lock:
                 dets = list(self._detector.latest)
 
+            scale = self._detector.overlay_scale_for_preview()
+            if scale is not None:
+                sx, sy = scale
+                dets = scale_detections_xyxy(dets, sx, sy)
+
             self._person.tick(dets)
             annotate_frame(frame, dets)
             bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -223,7 +228,11 @@ def start_arducam_vision() -> VisionRuntime:
     configure_vision_environment()
     run_rpicam_health_check()
 
-    video_dir = Path(os.environ.get("ARDUCAM_VIDEO_DIR", _DEFAULT_VIDEO_DIR)).expanduser()
+    video_dir = (
+        Path(os.environ.get("ARDUCAM_VIDEO_DIR", _DEFAULT_VIDEO_DIR))
+        .expandvars()
+        .expanduser()
+    )
     fps = float(os.environ.get("ARDUCAM_RECORD_FPS", "15"))
     person_conf = float(os.environ.get("ARDUCAM_PERSON_CONF", "0.5"))
     person_frames = int(os.environ.get("ARDUCAM_PERSON_FRAMES", "3"))
@@ -234,7 +243,10 @@ def start_arducam_vision() -> VisionRuntime:
         cam.stop()
         raise RuntimeError(f"Picamera2 failed: {cam.startup_error}")
 
-    detector = DetectionManager(model_path=os.environ.get("YOLO_ONNX_PATH"))
+    detector = DetectionManager(
+        model_path=os.environ.get("YOLO_ONNX_PATH"),
+        hef_path=os.environ.get("YOLO_HEF_PATH"),
+    )
     if detector.detector is None:
         cam.stop()
         raise RuntimeError("YOLO detector failed to load (check YOLO_BACKEND / HEF / hailo_platform).")

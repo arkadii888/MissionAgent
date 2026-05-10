@@ -121,6 +121,22 @@ class CameraManager:
                 break
             time.sleep(0.01)
 
+    def capture_for_detection(self):
+        """
+        Full-resolution frame for inference (dual-stream: main). Preview thread uses lores.
+        """
+        assert self.picam2 is not None
+        with self.lock:
+            if self._stream_mode == "dual":
+                try:
+                    return self.picam2.capture_array("main")
+                except Exception as e:
+                    log.error("capture_array(main) failed: %s", e)
+                    return None
+            if self.latest_frame is None:
+                return None
+            return self.latest_frame.copy()
+
     def stop(self) -> None:
         self.running = False
         if self.thread is not None:
