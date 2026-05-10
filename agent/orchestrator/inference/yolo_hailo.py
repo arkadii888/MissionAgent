@@ -5,9 +5,10 @@ Requires Raspberry Pi OS packages that provide `hailo_platform` and a
 compatible .hef for your accelerator (Hailo-8 vs Hailo-8L).
 
 Supports:
-- End-to-end export: single output (1, N, 6+) with x1,y1,x2,y2,conf,class in letterbox space
-  (same parsing as inference.yolo_onnx).
+- End-to-end export: single output (B, N, 6+) with x1,y1,x2,y2,conf,class in letterbox space
+  (same parsing as inference.yolo_onnx). B≥1 (e.g. batch-8 HEF uses B=8; decoded batch slot 0).
 - Multi-head export (6 outputs): cls/reg at 80/40/20 grids — Python postprocess (logit threshold).
+  Shapes may be (H,W,C), (1,H,W,C), or (B,H,W,C) when B matches the network input batch.
 """
 
 import os
@@ -43,15 +44,9 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -88.0, 88.0)))
 
 
-# Typical YOLO26 split-head Hailo builds. HailoRT may report NHWC with batch in the
-# shape (1, H, W, C) or omit batch and report (H, W, C) only — include both.
-_SHAPE_TO_HEAD: dict[tuple[int, ...], str] = {
-    (1, 80, 80, 80): "cls_80",
-    (1, 40, 40, 80): "cls_40",
-    (1, 20, 20, 80): "cls_20",
-    (1, 80, 80, 4): "reg_80",
-    (1, 40, 40, 4): "reg_40",
-    (1, 20, 20, 4): "reg_20",
+# Typical YOLO26 split-head Hailo builds: semantic layout is (grid_h, grid_w, C).
+# HailoRT may omit batch ((H,W,C)), use batch 1 ((1,H,W,C)), or batch B e.g. 8 ((8,H,W,C)).
+_TAIL_HWC_TO_HEAD: dict[tuple[int, int, int], str] = {
     (80, 80, 80): "cls_80",
     (40, 40, 80): "cls_40",
     (20, 20, 80): "cls_20",
@@ -60,20 +55,49 @@ _SHAPE_TO_HEAD: dict[tuple[int, ...], str] = {
     (20, 20, 4): "reg_20",
 }
 
+# Back-compat: older code matched full reported shapes including leading 1.
+_SHAPE_TO_HEAD: dict[tuple[int, ...], str] = {
+    (1, 80, 80, 80): "cls_80",
+    (1, 40, 40, 80): "cls_40",
+    (1, 20, 20, 80): "cls_20",
+    (1, 80, 80, 4): "reg_80",
+    (1, 40, 40, 4): "reg_40",
+    (1, 20, 20, 4): "reg_20",
+    **{((1,) + k): v for k, v in _TAIL_HWC_TO_HEAD.items()},
+    **_TAIL_HWC_TO_HEAD,
+}
 
-def _hwc_feature_map(x: np.ndarray) -> np.ndarray:
-    """Drop a leading batch of 1; accept (H, W, C) as-is."""
-    if x.ndim == 4 and x.shape[0] == 1:
-        return x[0]
+
+def _split_batch_hwc(full: tuple[int, ...]) -> tuple[int, tuple[int, int, int]]:
+    """Return (batch_dim, (H,W,C)) for output vstream shapes."""
+    if len(full) == 4:
+        b, h, w, c = full
+        return int(b), (int(h), int(w), int(c))
+    if len(full) == 3:
+        h, w, c = full
+        return 1, (int(h), int(w), int(c))
+    raise ValueError(f"Expected HWC or NHWC feature map meta-shape, got {full}")
+
+
+def _hwc_feature_map(x: np.ndarray, batch_index: int = 0) -> np.ndarray:
+    """Select one batch slice; accept (H, W, C), (N, H, W, C) with N>=1."""
+    if x.ndim == 4:
+        if x.shape[0] <= batch_index:
+            raise ValueError(
+                f"Output batch dimension {x.shape[0]} too small for index {batch_index}"
+            )
+        return np.ascontiguousarray(x[batch_index])
     if x.ndim == 3:
         return x
-    raise ValueError(f"Expected feature map NHWC (N=1) or HWC, got shape {x.shape}")
+    raise ValueError(f"Expected feature map NHWC or HWC, got shape {x.shape}")
 
 
 @dataclass
 class _OutputMode:
     kind: str  # "e2e" | "multi_head"
     e2e_name: str | None = None
+    #: Network input/output batch compiled into the HEF (e.g. 8 for yolo26n_b8.hef).
+    hef_batch: int = 1
 
 
 class YoloHailoDetector:
@@ -120,8 +144,9 @@ class YoloHailoDetector:
             raise RuntimeError("HEF has no input vstreams")
 
         self._input_name = self._in_info[0].name
-        shp = self._in_info[0].shape
-        # Typical static HEF: [1, 640, 640, 3] (NHWC) or [1, 3, 640, 640] (NCHW)
+        shp = tuple(self._in_info[0].shape)
+        # Typical static HEF: [B, 640, 640, 3] (NHWC) or [B, 3, 640, 640] (NCHW)
+        self._in_hef_batch: int = int(shp[0]) if len(shp) == 4 else 1
         if len(shp) == 4:
             if shp[1] == 3 and isinstance(shp[2], int) and isinstance(shp[3], int):
                 self._in_nchw = True
@@ -134,6 +159,7 @@ class YoloHailoDetector:
                 self._in_h, self._in_w = 640, 640
         else:
             self._in_nchw = False
+            self._in_hef_batch = 1
             self._in_h, self._in_w = 640, 640
 
         self._out_mode = self._detect_output_mode()
@@ -141,28 +167,85 @@ class YoloHailoDetector:
     def _detect_output_mode(self) -> _OutputMode:
         outs = self._out_info
         if len(outs) == 1:
-            return _OutputMode(kind="e2e", e2e_name=outs[0].name)
+            name = outs[0].name
+            shp_full = tuple(outs[0].shape)
+            hef_b = self._infer_e2e_batch(shp_full)
+            return _OutputMode(kind="e2e", e2e_name=name, hef_batch=hef_b)
 
-        shapes = [tuple(v.shape) for v in outs]
-        if len(shapes) == 6 and all(s in _SHAPE_TO_HEAD for s in shapes):
-            return _OutputMode(kind="multi_head")
+        by_head: dict[str, tuple[int, tuple[int, int, int]]] = {}
+        for v in outs:
+            raw = tuple(v.shape)
+            b, hwc = _split_batch_hwc(raw)
+            key = _TAIL_HWC_TO_HEAD.get(hwc)
+            if key is None:
+                # Fall back to legacy dict (includes (1,H,W,C) keys)
+                key = _SHAPE_TO_HEAD.get(raw)
+                if key is None:
+                    raise ValueError(
+                        f"Unknown output tensor shape {raw}; expected one of the YOLO26 "
+                        f"cls/reg heads at 80²/40²/20² (optionally leading batch)."
+                    )
+            if key in by_head:
+                raise ValueError(f"Duplicate head {key} in HEF outputs")
+            by_head[key] = (b, hwc)
 
-        raise ValueError(
-            f"Unsupported HEF output layout: {len(outs)} outputs with shapes {shapes}. "
-            "Expected either 1 end-to-end tensor (..., 6+) or 6 split-head tensors "
-            "(cls/reg at 80², 40², 20²)."
+        required_heads = frozenset(
+            ("cls_80", "cls_40", "cls_20", "reg_80", "reg_40", "reg_20")
         )
+        if set(by_head) != required_heads:
+            raise ValueError(
+                "Unsupported HEF output layout: expected 6 split heads "
+                f"{sorted(required_heads)}, got {sorted(by_head)}"
+            )
+
+        batches = {b for b, _ in by_head.values()}
+        if len(batches) != 1:
+            raise ValueError(
+                f"Inconsistent batch dimension across output tensors: {sorted(batches)}"
+            )
+        tail_b = next(iter(batches))
+        net_b = self._in_hef_batch
+        if tail_b != net_b and tail_b != 1:
+            raise ValueError(
+                f"Output batch {tail_b} does not match input batch {net_b}"
+            )
+
+        hb = tail_b if tail_b > 1 else net_b
+
+        return _OutputMode(kind="multi_head", hef_batch=max(hb, 1))
+
+    def _infer_e2e_batch(self, shp_full: tuple[int, ...]) -> int:
+        """Deduce compiled batch from e2e output shape."""
+        if len(shp_full) == 3 and shp_full[2] >= 6:
+            return int(shp_full[0])
+        if len(shp_full) == 2 and shp_full[1] >= 6:
+            return 1
+        raise ValueError(
+            f"Unexpected e2e output rank/shape metadata {shp_full}; "
+            "expected (B, N, K) with K>=6 or (N, K)."
+        )
+
+    def _effective_hef_batch(self) -> int:
+        b = self._out_mode.hef_batch
+        if b > 1:
+            return b
+        return max(self._in_hef_batch, 1)
 
     def _preprocess(self, rgb: np.ndarray) -> tuple[np.ndarray, tuple[int, int], Any]:
         h0, w0 = rgb.shape[0], rgb.shape[1]
         im_lb, ratio_pad_gain, pad_xy = _letterbox(rgb, (self._in_h, self._in_w))
+        hb = self._effective_hef_batch()
         if self._in_nchw:
             im = im_lb.transpose((2, 0, 1))
             im = np.ascontiguousarray(im, dtype=np.float32)
             im /= 255.0
-            batch = np.expand_dims(im, axis=0)
+            one = np.expand_dims(im, axis=0)
         else:
-            batch = np.expand_dims(im_lb, axis=0).astype(np.uint8, copy=False)
+            one = np.expand_dims(im_lb, axis=0).astype(np.uint8, copy=False)
+        if hb <= 1:
+            batch = one
+        else:
+            batch = np.repeat(one, hb, axis=0)
         return batch, (h0, w0), (ratio_pad_gain, pad_xy)
 
     def _infer_raw(self, input_batch: np.ndarray) -> dict[str, np.ndarray]:
@@ -192,7 +275,13 @@ class YoloHailoDetector:
     ) -> list[Detection]:
         if raw.ndim != 3 or raw.shape[2] < 6:
             raise ValueError(f"Unexpected e2e output shape: {raw.shape}")
-        d = raw[0].astype(np.float32, copy=False)
+        bi = int(os.environ.get("YOLO_HAILO_BATCH_INDEX", "0").strip())
+        if bi < 0 or bi >= raw.shape[0]:
+            raise ValueError(
+                f"YOLO_HAILO_BATCH_INDEX={bi} out of range for e2e batch dim "
+                f"{raw.shape[0]}"
+            )
+        d = raw[bi].astype(np.float32, copy=False)
         d = d[d[:, 4] >= self._conf_threshold]
         if d.size == 0:
             return []
@@ -223,8 +312,20 @@ class YoloHailoDetector:
         ratio_pad: Any,
     ) -> list[Detection]:
         tensors: dict[str, np.ndarray] = {}
+        bi = int(os.environ.get("YOLO_HAILO_BATCH_INDEX", "0").strip())
+        hb = max(self._effective_hef_batch(), 1)
+        if bi < 0 or bi >= hb:
+            raise ValueError(
+                f"YOLO_HAILO_BATCH_INDEX={bi} out of range for hef_batch={hb}"
+            )
+
         for name, data in tensors_by_name.items():
-            key = _SHAPE_TO_HEAD.get(tuple(data.shape))
+            raw = tuple(int(x) for x in data.shape)
+            if len(raw) == 4:
+                _, hwc = _split_batch_hwc(raw)
+                key = _TAIL_HWC_TO_HEAD.get(hwc) or _SHAPE_TO_HEAD.get(raw)
+            else:
+                key = _SHAPE_TO_HEAD.get(raw)
             if key:
                 tensors[key] = data
 
@@ -250,8 +351,8 @@ class YoloHailoDetector:
         cand: list[tuple[float, float, float, float, float, int]] = []
 
         for stride, g in zip(strides, grids, strict=True):
-            cls_data = _hwc_feature_map(tensors[f"cls_{g}"])
-            reg_data = _hwc_feature_map(tensors[f"reg_{g}"])
+            cls_data = _hwc_feature_map(tensors[f"cls_{g}"], batch_index=bi)
+            reg_data = _hwc_feature_map(tensors[f"reg_{g}"], batch_index=bi)
             cls_flat = cls_data.reshape(-1, 80)
             reg_flat = reg_data.reshape(-1, 4)
             max_logits = cls_flat.max(axis=1)
