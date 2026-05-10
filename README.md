@@ -101,6 +101,20 @@ uv run python agent/orchestrator/loops.py
 
 The same string is not processed twice in one run; change the prompt in C++ to request a new mission. Tune `PROMPT_POLL_INTERVAL_S` and `FOLLOW_POLL_INTERVAL_S` (seconds) and `TELEMETRY_POLL_HZ` if needed.
 
+### ArduCam + Hailo YOLO (optional)
+
+Set **`ARDUCAM_VISION=1`** to run `rpicam-*` smoke test, Picamera2 capture, Hailo inference on **`agent/models/yolo26n_b8.hef`** (override with **`YOLO_HEF_PATH`**), overlay recording under **`ARDUCAM_VIDEO_DIR`** (default `/arducamvideos`, timestamped `arducam_*.mp4`), and the asyncio mission loop unchanged. Startup is fail-fast if the camera or detector cannot start. With vision on, **`YOLO_BACKEND`** defaults to **`hailo`** unless you set it earlier.
+
+**Picamera2** is not in `pyproject.toml` (cross-platform lock); on a Pi install it in the venv, e.g. `uv pip install "picamera2>=0.3.31"`, or use the OS package—see comments in **`agent/.env.orchestrator`**.
+
+**Where thresholds are set**
+
+| What | Where | Default |
+| --- | --- | --- |
+| **Person** `log.info` only after this confidence, for **N** consecutive recorder frames | **`ARDUCAM_PERSON_CONF`**, **`ARDUCAM_PERSON_FRAMES`** in `agent/.env.orchestrator` (or the shell) | `0.5`, `3` |
+| **Per-model** score before a box is kept (all classes) | `YoloHailoDetector` / `Yolo26OnnxDetector` **`conf_threshold`** in code (`0.25`); not env-wired today | `0.25` |
+| Verbose detection pipeline prints / logs | **`DETECTION_DEBUG_LOG=1`** | off |
+
 ## Mission DSL pipeline (Gemma 4 E2B)
 
 The orchestrator now uses a two-stage mission pipeline:

@@ -17,6 +17,11 @@ from agent.orchestrator.logging import JsonPipelineLogger, log_mission_multipoin
 from agent.orchestrator.mission_intents import expand_intents_to_mission
 from agent.orchestrator.mission_intents.proto import mission_list_to_ordered_dict
 from agent.orchestrator.state import MissionState, TelemetryCache
+from agent.orchestrator.vision_sidecar import (
+    arducam_vision_enabled,
+    start_arducam_vision,
+    stop_arducam_vision,
+)
 
 log = logging.getLogger(__name__)
 
@@ -214,159 +219,185 @@ async def run_mission_test_loop() -> None:
         enabled=settings.mission_json_log_enabled,
     )
     local_test_mode = _env_flag("LOCAL_TEST_MODE")
-    last_seen_prompt: str | None = None
+    last_seen_prompt: list[str | None] = [None]
 
     log.info(
-        "Starting mission test loop: grpc=%s llama=%s prompt_poll=%.2fs local_test_mode=%s",
+        "Starting mission test loop: grpc=%s llama=%s prompt_poll=%.2fs local_test_mode=%s arducam=%s",
         settings.grpc_target,
         settings.llama_cpp_url,
         prompt_interval,
         local_test_mode,
+        arducam_vision_enabled(),
     )
 
-    if local_test_mode:
-        telemetry_map = _load_local_test_telemetry()
-        log.info(
-            "Running in LOCAL_TEST_MODE with fake telemetry lat=%.7f lon=%.7f rel_alt=%.2f abs_alt=%.2f",
-            telemetry_map["latitude_deg"],
-            telemetry_map["longitude_deg"],
-            telemetry_map["relative_altitude_m"],
-            telemetry_map["absolute_altitude_m"],
-        )
-        while True:
-            prompt_text = await asyncio.to_thread(
-                input, "Mission prompt (empty to exit LOCAL_TEST_MODE): "
-            )
-            prompt_text = prompt_text.strip()
-            if not prompt_text:
-                log.info("LOCAL_TEST_MODE prompt empty; stopping.")
-                return
-
-            log.info(
-                "LOCAL_TEST_MODE prompt: %r",
-                prompt_text[:200] + ("..." if len(prompt_text) > 200 else ""),
-            )
-            trace_id = json_logger.new_trace_id()
-            json_logger.log(
-                "prompt_received",
-                trace_id,
-                {"prompt_text": prompt_text, "telemetry": telemetry_map},
-            )
-
-            planned = await _plan_from_prompt(
-                llm=llm,
-                mission=mission,
-                settings=settings,
-                prompt_text=prompt_text,
-                telemetry_map=telemetry_map,
-                json_logger=json_logger,
-                trace_id=trace_id,
-            )
-            if planned is None:
-                continue
-
-            name, proto, planned_trace_id = planned
-            await mission.set_mission(name, proto)
-            log.info(
-                "LOCAL_TEST_MODE planned mission %r (%d items). No StartMission gRPC call made.",
-                name,
-                len(proto.items),
-            )
-            log.info(
-                "LOCAL_TEST_MODE mission payload (ordered dict):\n%s",
-                json.dumps(mission_list_to_ordered_dict(proto), indent=2, ensure_ascii=False),
-            )
-            json_logger.log(
-                "mission_uploaded",
-                planned_trace_id,
-                {"local_test_mode": True, "mission_name": name, "item_count": len(proto.items)},
-            )
-
-    async with InternalGrpcClient(settings) as client:
-        telemetry_task = asyncio.create_task(
-            _telemetry_poll_loop(client, cache, period_telemetry, stop),
-            name="telemetry_poll",
-        )
+    vision_rt = None
+    if arducam_vision_enabled():
+        log.info("Starting ArduCam vision pipeline (fail-fast on errors)...")
         try:
-            while not stop.is_set():
-                try:
-                    pr = await client.get_prompt()
-                except Exception:
-                    log.exception("GetPrompt failed")
-                    await asyncio.sleep(prompt_interval)
-                    continue
+            vision_rt = await asyncio.to_thread(start_arducam_vision)
+        except Exception:
+            log.exception("ArduCam vision startup failed")
+            raise SystemExit(1) from None
 
-                text = (pr.prompt or "").strip()
-                if not text or text == last_seen_prompt:
-                    await asyncio.sleep(prompt_interval)
-                    continue
-                last_seen_prompt = text
+    try:
+        if local_test_mode:
+            telemetry_map = _load_local_test_telemetry()
+            log.info(
+                "Running in LOCAL_TEST_MODE with fake telemetry lat=%.7f lon=%.7f rel_alt=%.2f abs_alt=%.2f",
+                telemetry_map["latitude_deg"],
+                telemetry_map["longitude_deg"],
+                telemetry_map["relative_altitude_m"],
+                telemetry_map["absolute_altitude_m"],
+            )
+            while True:
+                prompt_text = await asyncio.to_thread(
+                    input, "Mission prompt (empty to exit LOCAL_TEST_MODE): "
+                )
+                prompt_text = prompt_text.strip()
+                if not prompt_text:
+                    log.info("LOCAL_TEST_MODE prompt empty; stopping.")
+                    return
 
-                log.info("New prompt: %r", text[:200] + ("..." if len(text) > 200 else ""))
-
-                try:
-                    tel = await client.get_telemetry()
-                    await cache.update_from_telemetry(tel)
-                except Exception as exc:
-                    log.exception("get_telemetry for planning: %s", exc)
-                    await mission.mark_error(str(exc))
-                    await asyncio.sleep(prompt_interval)
-                    continue
-
-                tel_map = await cache.as_any()
+                log.info(
+                    "LOCAL_TEST_MODE prompt: %r",
+                    prompt_text[:200] + ("..." if len(prompt_text) > 200 else ""),
+                )
                 trace_id = json_logger.new_trace_id()
                 json_logger.log(
                     "prompt_received",
                     trace_id,
-                    {"prompt_text": text, "telemetry": tel_map},
+                    {"prompt_text": prompt_text, "telemetry": telemetry_map},
                 )
+
                 planned = await _plan_from_prompt(
                     llm=llm,
                     mission=mission,
                     settings=settings,
-                    prompt_text=text,
-                    telemetry_map=tel_map,
+                    prompt_text=prompt_text,
+                    telemetry_map=telemetry_map,
                     json_logger=json_logger,
                     trace_id=trace_id,
                 )
                 if planned is None:
-                    await asyncio.sleep(prompt_interval)
                     continue
-                name, proto, planned_trace_id = planned
 
+                name, proto, planned_trace_id = planned
+                await mission.set_mission(name, proto)
                 log.info(
-                    "gRPC StartMission payload (ordered dict):\n%s",
+                    "LOCAL_TEST_MODE planned mission %r (%d items). No StartMission gRPC call made.",
+                    name,
+                    len(proto.items),
+                )
+                log.info(
+                    "LOCAL_TEST_MODE mission payload (ordered dict):\n%s",
                     json.dumps(mission_list_to_ordered_dict(proto), indent=2, ensure_ascii=False),
                 )
-
-                try:
-                    await client.start_mission(proto)
-                except Exception as exc:
-                    log.exception("StartMission failed: %s", exc)
-                    json_logger.log(
-                        "mission_upload_failed",
-                        planned_trace_id,
-                        {"stage": "start_mission_rpc", "error": str(exc)},
-                    )
-                    await mission.mark_error(f"grpc: {exc}")
-                    await asyncio.sleep(prompt_interval)
-                    continue
-
-                await mission.set_mission(name, proto)
-                log.info("Uploaded mission %r (%d items).", name, len(proto.items))
                 json_logger.log(
                     "mission_uploaded",
                     planned_trace_id,
-                    {"local_test_mode": False, "mission_name": name, "item_count": len(proto.items)},
+                    {
+                        "local_test_mode": True,
+                        "mission_name": name,
+                        "item_count": len(proto.items),
+                    },
                 )
 
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            log.info("Shutting down...")
-        finally:
-            stop.set()
-            telemetry_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await telemetry_task
+        async with InternalGrpcClient(settings) as client:
+            telemetry_task = asyncio.create_task(
+                _telemetry_poll_loop(client, cache, period_telemetry, stop),
+                name="telemetry_poll",
+            )
+            try:
+                while not stop.is_set():
+                    try:
+                        pr = await client.get_prompt()
+                    except Exception:
+                        log.exception("GetPrompt failed")
+                        await asyncio.sleep(prompt_interval)
+                        continue
+
+                    text = (pr.prompt or "").strip()
+                    if not text or text == last_seen_prompt[0]:
+                        await asyncio.sleep(prompt_interval)
+                        continue
+                    last_seen_prompt[0] = text
+
+                    log.info("New prompt: %r", text[:200] + ("..." if len(text) > 200 else ""))
+
+                    try:
+                        tel = await client.get_telemetry()
+                        await cache.update_from_telemetry(tel)
+                    except Exception as exc:
+                        log.exception("get_telemetry for planning: %s", exc)
+                        await mission.mark_error(str(exc))
+                        await asyncio.sleep(prompt_interval)
+                        continue
+
+                    tel_map = await cache.as_any()
+                    trace_id = json_logger.new_trace_id()
+                    json_logger.log(
+                        "prompt_received",
+                        trace_id,
+                        {"prompt_text": text, "telemetry": tel_map},
+                    )
+                    planned = await _plan_from_prompt(
+                        llm=llm,
+                        mission=mission,
+                        settings=settings,
+                        prompt_text=text,
+                        telemetry_map=tel_map,
+                        json_logger=json_logger,
+                        trace_id=trace_id,
+                    )
+                    if planned is None:
+                        await asyncio.sleep(prompt_interval)
+                        continue
+                    name, proto, planned_trace_id = planned
+
+                    log.info(
+                        "gRPC StartMission payload (ordered dict):\n%s",
+                        json.dumps(
+                            mission_list_to_ordered_dict(proto),
+                            indent=2,
+                            ensure_ascii=False,
+                        ),
+                    )
+
+                    try:
+                        await client.start_mission(proto)
+                    except Exception as exc:
+                        log.exception("StartMission failed: %s", exc)
+                        json_logger.log(
+                            "mission_upload_failed",
+                            planned_trace_id,
+                            {"stage": "start_mission_rpc", "error": str(exc)},
+                        )
+                        await mission.mark_error(f"grpc: {exc}")
+                        await asyncio.sleep(prompt_interval)
+                        continue
+
+                    await mission.set_mission(name, proto)
+                    log.info("Uploaded mission %r (%d items).", name, len(proto.items))
+                    json_logger.log(
+                        "mission_uploaded",
+                        planned_trace_id,
+                        {
+                            "local_test_mode": False,
+                            "mission_name": name,
+                            "item_count": len(proto.items),
+                        },
+                    )
+
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                log.info("Shutting down...")
+            finally:
+                stop.set()
+                telemetry_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await telemetry_task
+
+    finally:
+        await asyncio.to_thread(stop_arducam_vision, vision_rt)
 
 
 __all__ = ["run_mission_test_loop", "_load_settings"]
