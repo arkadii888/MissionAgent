@@ -3,6 +3,8 @@ import logging
 import os
 import threading
 import time
+
+import cv2
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -287,11 +289,15 @@ class DetectionManager:
                 time.sleep(0.01)
                 continue
 
-            shape = tuple(int(x) for x in frame.shape)
+            infer_rgb = frame
+            if getattr(cam, "frames_are_bgr", False):
+                infer_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            shape = tuple(int(x) for x in infer_rgb.shape)
             mean_rgb: tuple[float, float, float] | None = None
             std_rgb: tuple[float, float, float] | None = None
-            if self._debug_frame_stats and frame.ndim == 3 and frame.shape[2] == 3:
-                f = frame.astype(np.float64)
+            if self._debug_frame_stats and infer_rgb.ndim == 3 and infer_rgb.shape[2] == 3:
+                f = infer_rgb.astype(np.float64)
                 m = f.reshape(-1, 3).mean(axis=0)
                 s = f.reshape(-1, 3).std(axis=0)
                 mean_rgb = (float(m[0]), float(m[1]), float(m[2]))
@@ -299,7 +305,7 @@ class DetectionManager:
 
             t0 = time.perf_counter()
             try:
-                dets = self.detector.detect(frame)
+                dets = self.detector.detect(infer_rgb)
             except Exception as e:
                 with self.lock:
                     self._last_error = f"{type(e).__name__}: {e}"

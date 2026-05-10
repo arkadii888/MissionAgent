@@ -39,6 +39,15 @@ class CameraManager:
         self._capture_stream_name = "lores"
         self._stream_mode: str | None = None
         self.thread: threading.Thread | None = None
+        #: True when ``capture_array`` returns OpenCV-native BGR (e.g. ``BGR888`` stream).
+        self.frames_are_bgr: bool = False
+        self._pixel_format: str = "RGB888"
+
+    def _pixel_format_try_order(self) -> list[str]:
+        """BGR first so :class:`~cv2.VideoWriter` paths need no RGB↔BGR swap."""
+        if os.environ.get("ARDUCAM_FORCE_RGB888", "").strip().lower() in ("1", "true", "yes"):
+            return ["RGB888", "BGR888"]
+        return ["BGR888", "RGB888"]
 
     def _reset_camera(self) -> None:
         from picamera2 import Picamera2
@@ -59,35 +68,66 @@ class CameraManager:
         from picamera2 import Picamera2
 
         self.startup_error = None
+        self.frames_are_bgr = False
         self.picam2 = Picamera2()
         assert self.picam2 is not None
-        try:
-            cfg = self.picam2.create_preview_configuration(
-                main={"size": self.capture_size, "format": "RGB888"},
-                lores={"size": self.stream_display_size, "format": "RGB888"},
-                buffer_count=4,
-            )
-            self.picam2.configure(cfg)
-            self.picam2.start()
-            self._capture_stream_name = "lores"
-            self._stream_mode = "dual"
-        except Exception as e:
-            log.warning(
-                "Dual-stream (main+lores) failed: %r; falling back to single-stream preview.",
-                e,
-            )
-            self._reset_camera()
+
+        dual_ok = False
+        last_dual_err: Exception | None = None
+        for px in self._pixel_format_try_order():
             try:
                 cfg = self.picam2.create_preview_configuration(
-                    main={"size": self.stream_display_size, "format": "RGB888"},
+                    main={"size": self.capture_size, "format": px},
+                    lores={"size": self.stream_display_size, "format": px},
                     buffer_count=4,
                 )
                 self.picam2.configure(cfg)
                 self.picam2.start()
-                self._capture_stream_name = "main"
-                self._stream_mode = "single_preview"
-            except Exception as e2:
-                self.startup_error = f"{type(e2).__name__}: {e2}"
+                self._capture_stream_name = "lores"
+                self._stream_mode = "dual"
+                self._pixel_format = px
+                self.frames_are_bgr = px == "BGR888"
+                dual_ok = True
+                log.info("Picamera2 dual-stream using pixel format %s.", px)
+                break
+            except Exception as e:
+                last_dual_err = e
+                self._reset_camera()
+
+        if not dual_ok:
+            log.warning(
+                "Dual-stream failed (%r); falling back to single-stream preview.",
+                last_dual_err,
+            )
+            self._reset_camera()
+            assert self.picam2 is not None
+            single_ok = False
+            last_single_err: Exception | None = None
+            for px in self._pixel_format_try_order():
+                try:
+                    cfg = self.picam2.create_preview_configuration(
+                        main={"size": self.stream_display_size, "format": px},
+                        buffer_count=4,
+                    )
+                    self.picam2.configure(cfg)
+                    self.picam2.start()
+                    self._capture_stream_name = "main"
+                    self._stream_mode = "single_preview"
+                    self._pixel_format = px
+                    self.frames_are_bgr = px == "BGR888"
+                    single_ok = True
+                    log.info("Picamera2 single-stream using pixel format %s.", px)
+                    break
+                except Exception as e2:
+                    last_single_err = e2
+                    self._reset_camera()
+
+            if not single_ok:
+                self.startup_error = (
+                    f"{type(last_single_err).__name__}: {last_single_err}"
+                    if last_single_err is not None
+                    else "unknown"
+                )
                 self._stream_mode = None
                 log.error("Camera start failed: %s", self.startup_error)
                 return
@@ -104,9 +144,11 @@ class CameraManager:
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.thread.start()
         log.info(
-            "Camera capture thread started (mode=%s, dequeue=%r).",
+            "Camera capture thread started (mode=%s, dequeue=%r, format=%s, bgr_native=%s).",
             self._stream_mode,
             self._capture_stream_name,
+            self._pixel_format,
+            self.frames_are_bgr,
         )
 
     def _capture_loop(self) -> None:

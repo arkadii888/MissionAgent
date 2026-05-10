@@ -1,4 +1,4 @@
-"""Draw detection overlays on RGB frames (Picamera2 / OpenCV)."""
+"""Draw detection overlays on Picamera2 / OpenCV frames (RGB or BGR channel order)."""
 
 import cv2
 import numpy as np
@@ -12,9 +12,19 @@ def color_rgb_for_class(class_id: int) -> tuple[int, int, int]:
     return (max(r, 50), max(g, 50), max(b, 50))
 
 
-def annotate_frame(rgb: np.ndarray, dets: list[Detection]) -> np.ndarray:
-    """Draw overlays in place on rgb (same channel order as Picamera2)."""
-    h, w = rgb.shape[:2]
+def _draw_color_for_image(rgbs: tuple[int, int, int], *, image_is_bgr: bool) -> tuple[int, int, int]:
+    """cv2 drawing assigns tuple (c0,c1,c2) to image channels 0..2; match RGB or BGR storage."""
+    if image_is_bgr:
+        r, g, b = rgbs
+        return (b, g, r)
+    return rgbs
+
+
+def annotate_frame(
+    image: np.ndarray, dets: list[Detection], *, image_is_bgr: bool = False
+) -> np.ndarray:
+    """Draw overlays in place. Use ``image_is_bgr=True`` for BGR888 / OpenCV-native buffers."""
+    h, w = image.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
     counts: dict[str, int] = {}
 
@@ -23,8 +33,8 @@ def annotate_frame(rgb: np.ndarray, dets: list[Detection]) -> np.ndarray:
         x1, y1, x2, y2 = (int(round(v)) for v in d.xyxy)
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w - 1, x2), min(h - 1, y2)
-        color = color_rgb_for_class(d.class_id)
-        cv2.rectangle(rgb, (x1, y1), (x2, y2), color, 2)
+        color = _draw_color_for_image(color_rgb_for_class(d.class_id), image_is_bgr=image_is_bgr)
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         label = f"{d.class_name} {d.confidence:.2f}"
         (tw, th), bl = cv2.getTextSize(label, font, 0.5, 1)
         if y1 > th + bl + 8:
@@ -32,14 +42,14 @@ def annotate_frame(rgb: np.ndarray, dets: list[Detection]) -> np.ndarray:
         else:
             ty = min(h - 2, y2 + th + 6)
         cv2.rectangle(
-            rgb,
+            image,
             (x1, ty - th - 2),
             (x1 + tw + 4, ty + bl + 2),
             color,
             -1,
         )
         cv2.putText(
-            rgb,
+            image,
             label,
             (x1 + 2, ty),
             font,
@@ -57,14 +67,14 @@ def annotate_frame(rgb: np.ndarray, dets: list[Detection]) -> np.ndarray:
     for line in summary_lines:
         (tw, th), bl = cv2.getTextSize(line, font, fs, thk)
         cv2.rectangle(
-            rgb,
+            image,
             (x0 - 2, y_line - th - 2),
             (x0 + tw + 8, y_line + bl + 2),
             (32, 32, 32),
             -1,
         )
         cv2.putText(
-            rgb,
+            image,
             line,
             (x0 + 4, y_line),
             font,
@@ -75,4 +85,4 @@ def annotate_frame(rgb: np.ndarray, dets: list[Detection]) -> np.ndarray:
         )
         y_line += th + bl + 8
 
-    return rgb
+    return image

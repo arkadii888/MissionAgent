@@ -180,9 +180,12 @@ class _OverlayRecorder:
                 dets = scale_detections_xyxy(dets, sx, sy)
 
             self._person.tick(dets)
-            annotate_frame(frame, dets)
-            bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            h, w = bgr.shape[:2]
+            annotate_frame(frame, dets, image_is_bgr=self._cam.frames_are_bgr)
+            if self._cam.frames_are_bgr:
+                to_write = frame
+            else:
+                to_write = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            h, w = to_write.shape[:2]
 
             if writer is None:
                 assert self._out_path is not None
@@ -196,7 +199,7 @@ class _OverlayRecorder:
                     log.error("VideoWriter failed to open for %s", self._out_path)
                     return
 
-            writer.write(bgr)
+            writer.write(to_write)
 
             elapsed = time.perf_counter() - t0
             time.sleep(max(0.0, period - elapsed))
