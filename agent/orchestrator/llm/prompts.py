@@ -13,7 +13,9 @@ def build_system_prompt(max_waypoints: int = 32) -> str:
         "You are Gemma 4 E2B, a drone mission intent planner. "
         "Return only valid JSON that matches the provided schema. "
         f"Create at most {max_waypoints} intents. "
-        "Do not compute latitude/longitude. "
+        "Unless the user provides explicit geographic coordinates, plan legs with move/move_directional/move_bearing "
+        "(offsets); do not invent lat/lon. When they supply WGS84 coordinates, use goto_lat_lon "
+        "(latitude_deg, longitude_deg; optional altitude_m at that waypoint). "
         "Use only schema-defined intent types. "
         "Use metric distances in meters and yaw in degrees. "
         "Prefer complete missions: include takeoff first and land last unless the user explicitly asks otherwise. "
@@ -45,7 +47,11 @@ def build_user_prompt(
         f"- absolute_altitude_m: {telemetry.get('absolute_altitude_m')}\n"
         "Intent checklist:\n"
         "1) Convert the user request into an ordered list of mission intents.\n"
-        "2) Prefer move_directional for world-frame compass movement.\n"
+        "2) For world-frame compass legs: use move_directional for named directions (north, southeast, …); "
+        "use move_bearing with distance_m and bearing_deg (clockwise from north, 0°=north) when the user "
+        "gives a numeric heading (e.g. \"100 m at 30 degrees\", \"bear 045 for 200 meters\").\n"
+        "2b) Use goto_lat_lon when the user names a latitude and longitude (degrees); optional altitude_m "
+        "sets relative altitude at that waypoint.\n"
         "3) Use move_vertical for descend/down requests.\n"
         "4) Use turn_relative for turn around (180 degrees).\n"
         "5) Use safety_control for stop/hold/abort and for return-home: treat \"return\", \"RTL/RTB\", "
@@ -71,6 +77,12 @@ def build_user_prompt(
         '- Output: {"mission_name":"turn and hold","intents":[{"type":"takeoff","altitude_m":10},{"type":"turn_relative","maneuver":"turn_around"},{"type":"safety_control","action":"hold"},{"type":"land"}]}\n'
         '- Input: "Take off, comb a 5m square, then land." (no lane spacing given)\n'
         '- Output: {"mission_name":"small square","intents":[{"type":"takeoff","altitude_m":10},{"type":"comb_square_area","side_m":5,"start_corner":"south_west"},{"type":"land"}]}\n'
+        '- Input: "Take off to 15m, fly to latitude 47.3980 longitude 8.5460, land."\n'
+        '- Output: {"mission_name":"goto coords","intents":[{"type":"takeoff","altitude_m":15},'
+        '{"type":"goto_lat_lon","latitude_deg":47.398,"longitude_deg":8.546},{"type":"land"}]}\n'
+        '- Input: "Take off to 10m, go 100m at 30 degrees, land."\n'
+        '- Output: {"mission_name":"bearing hop","intents":[{"type":"takeoff","altitude_m":10},'
+        '{"type":"move_bearing","distance_m":100,"bearing_deg":30},{"type":"land"}]}\n'
         f"Mission status: {mission_status}\n"
         "Generate mission intents now."
     )

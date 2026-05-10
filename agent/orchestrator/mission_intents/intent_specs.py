@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent.orchestrator.mission_intents.basic import (
+    handle_goto_lat_lon,
     handle_land,
     handle_loiter,
     handle_move,
+    handle_move_bearing,
     handle_move_directional,
     handle_move_vertical,
     handle_return_to_home,
@@ -123,6 +125,20 @@ INTENT_SPECS: tuple[IntentSpec, ...] = (
         handler=handle_move,
     ),
     IntentSpec(
+        type_name="goto_lat_lon",
+        one_of_schema={
+            "required": ["type", "latitude_deg", "longitude_deg"],
+            "properties": {
+                "type": {"const": "goto_lat_lon"},
+                "latitude_deg": {"type": "number", "minimum": -90, "maximum": 90},
+                "longitude_deg": {"type": "number", "minimum": -180, "maximum": 180},
+                "altitude_m": {"type": "number", **_ALT_M},
+            },
+            "additionalProperties": False,
+        },
+        handler=handle_goto_lat_lon,
+    ),
+    IntentSpec(
         type_name="move_directional",
         one_of_schema={
             "required": ["type", "direction"],
@@ -140,6 +156,19 @@ INTENT_SPECS: tuple[IntentSpec, ...] = (
             "additionalProperties": False,
         },
         handler=handle_move_directional,
+    ),
+    IntentSpec(
+        type_name="move_bearing",
+        one_of_schema={
+            "required": ["type", "distance_m", "bearing_deg"],
+            "properties": {
+                "type": {"const": "move_bearing"},
+                "distance_m": {"type": "number", "minimum": 0.1, "maximum": 1000},
+                "bearing_deg": {"type": "number", "minimum": -360, "maximum": 360},
+            },
+            "additionalProperties": False,
+        },
+        handler=handle_move_bearing,
     ),
     IntentSpec(
         type_name="move_vertical",

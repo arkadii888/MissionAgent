@@ -4,6 +4,7 @@ import pytest
 
 from agent.orchestrator.mission_intents.area_patterns import comb_lane_spacing_from_altitude_m
 from agent.orchestrator.mission_intents.expand import build_default_registry, expand_intents_to_mission
+from agent.orchestrator.mission_intents.geometry import compute_lat_long_from_offset, north_east_m_from_bearing_deg
 from agent.orchestrator.mission_intents.proto import mission_list_to_multipoint_geometry
 
 
@@ -14,6 +15,27 @@ def _telemetry() -> dict[str, float]:
         "relative_altitude_m": 0.0,
         "absolute_altitude_m": 488.0,
     }
+
+
+def test_goto_lat_lon_matches_flat_earth_position() -> None:
+    tel = _telemetry()
+    base_lat = tel["latitude_deg"]
+    base_lon = tel["longitude_deg"]
+    north_m, east_m = 12.3, -7.5
+    target_lat, target_lon = compute_lat_long_from_offset(base_lat, base_lon, north_m, east_m)
+    plan = {
+        "mission_name": "goto",
+        "intents": [
+            {"type": "takeoff", "altitude_m": 10},
+            {"type": "goto_lat_lon", "latitude_deg": target_lat, "longitude_deg": target_lon, "altitude_m": 18},
+            {"type": "land"},
+        ],
+    }
+    out = expand_intents_to_mission(plan, tel)
+    goto_item = out.items[1]
+    assert goto_item.latitude_deg == pytest.approx(target_lat, rel=1e-9, abs=1e-9)
+    assert goto_item.longitude_deg == pytest.approx(target_lon, rel=1e-9, abs=1e-9)
+    assert goto_item.relative_altitude_m == pytest.approx(18.0)
 
 
 def test_expand_intents_to_mission_basic_flow() -> None:
@@ -54,6 +76,29 @@ def test_registry_unknown_intent_fails() -> None:
     plan = {"mission_name": "bad", "intents": [{"type": "unknown_intent"}]}
     with pytest.raises(ValueError, match="unsupported intent type"):
         expand_intents_to_mission(plan, _telemetry(), registry=build_default_registry())
+
+
+def test_move_bearing_numeric_heading() -> None:
+    plan = {
+        "mission_name": "bearing leg",
+        "intents": [
+            {"type": "takeoff", "altitude_m": 10},
+            {"type": "move_bearing", "distance_m": 100, "bearing_deg": 30},
+            {"type": "land"},
+        ],
+    }
+    tel = _telemetry()
+    out = expand_intents_to_mission(plan, tel)
+    assert len(out.items) == 3
+    north_m, east_m = north_east_m_from_bearing_deg(100.0, 30.0)
+    exp_lat, exp_lon = compute_lat_long_from_offset(
+        tel["latitude_deg"],
+        tel["longitude_deg"],
+        north_m,
+        east_m,
+    )
+    assert out.items[1].latitude_deg == pytest.approx(exp_lat)
+    assert out.items[1].longitude_deg == pytest.approx(exp_lon)
 
 
 def test_phase1_world_frame_directional_and_vertical_and_turn() -> None:

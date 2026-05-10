@@ -23,7 +23,7 @@ def build_proto_item(
     vehicle_action: int,
     loiter_time_s: float = 1.0,
     yaw_deg: float = 0.0,
-    speed_m_s: float = 1.0,
+    speed_m_s: float = 1.75,
 ) -> internal_communication_pb2.MissionItem:
     """Allocate one mission item using project waypoint defaults.
 
@@ -59,8 +59,8 @@ def validate_proto_item(item: internal_communication_pb2.MissionItem) -> None:
         raise ValueError("longitude_deg must be in [-180, 180]")
     if not (MIN_RELATIVE_ALTITUDE_M <= item.relative_altitude_m <= MAX_RELATIVE_ALTITUDE_M):
         raise ValueError(f"relative_altitude_m must be in [{MIN_RELATIVE_ALTITUDE_M}, {MAX_RELATIVE_ALTITUDE_M}]")
-    if item.speed_m_s != 1.0:
-        raise ValueError("speed_m_s must be 1.0")
+    if item.speed_m_s > 4.0:
+        raise ValueError("speed_m_s must be smaller 4.0")
     if item.loiter_time_s < 0.0:
         raise ValueError("loiter_time_s must be >= 0")
     if not (-360.0 <= item.yaw_deg <= 360.0):

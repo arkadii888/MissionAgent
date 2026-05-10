@@ -123,6 +123,7 @@ Naming conventions used in this repository for this flow:
 | `takeoff` | `altitude_m` | Adds a takeoff waypoint at telemetry origin with target relative altitude. | `agent/orchestrator/mission_intents/basic.py` |
 | `move` | `north_m`, `east_m`, `up_m` | Updates cumulative north/east/altitude offsets and appends a fly-through waypoint with computed lat/lon. | `agent/orchestrator/mission_intents/basic.py` |
 | `move_directional` | `direction` (`north/south/east/west/northeast/northwest/southeast/southwest`) | World-frame directional move. Supports compass synonyms and optional `distance_m` (default `10`). | `agent/orchestrator/mission_intents/basic.py` |
+| `move_bearing` | `distance_m`, `bearing_deg` | World-frame move on a compass bearing: clockwise from north (0°=north, 90°=east). | `agent/orchestrator/mission_intents/basic.py` |
 | `move_vertical` | `direction` (`down`) | Vertical descend move. Supports descend/down synonyms and optional `distance_m` (default `5`). | `agent/orchestrator/mission_intents/basic.py` |
 | `turn_relative` | none (`type` only) | Turn-around behavior only in phase 1 (180 degrees). Emits a waypoint with updated yaw. | `agent/orchestrator/mission_intents/basic.py` |
 | `safety_control` | `action` (`stop/hold/abort/return_home`) | Safety primitive; marks mission as preempted so subsequent movement/sweep intents are skipped (except `land`). | `agent/orchestrator/mission_intents/basic.py` |
@@ -158,7 +159,7 @@ When intents are converted to protobuf mission items, these defaults are applied
 Validation contract enforced before upload:
 - latitude in `[-90, 90]`, longitude in `[-180, 180]`
 - altitude in `[0, 50]`
-- `speed_m_s == 1.0`
+- `speed_m_s == 1.75`
 - `camera_action == 0`
 - `vehicle_action in {0,1,2,3,4}`
 

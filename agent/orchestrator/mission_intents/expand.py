@@ -86,7 +86,7 @@ def _validate_contract(result: internal_communication_pb2.MissionItemList) -> No
     """Raise if items fail geometry validation or executor upload rules (speed, camera)."""
     validate_proto_list(result)
     for item in result.items:
-        if item.speed_m_s != 1.0:
-            raise ValueError("contract violation: speed_m_s must be 1.0")
+        if item.speed_m_s > 4.0:
+            raise ValueError("contract violation: speed_m_s must be smaller 4.0")
         if item.camera_action != 0:
             raise ValueError("contract violation: camera_action must be 0")

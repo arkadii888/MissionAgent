@@ -5,46 +5,34 @@ from typing import Any
 
 from .context import ExpansionContext
 from .fields import optional_float, require_float
-from .geometry import bearing_to_yaw_deg, clamp_relative_altitude_m, compute_lat_long_from_offset, normalize_yaw
+from .geometry import (
+    bearing_to_yaw_deg,
+    clamp_relative_altitude_m,
+    compute_lat_long_from_offset,
+    compute_north_east_offset_m,
+    north_east_m_from_bearing_deg,
+    normalize_yaw,
+)
 from .proto import build_proto_item
 
 _DEFAULT_DIRECTIONAL_DISTANCE_M = 10.0
-_DIRECTION_VECTORS: dict[str, tuple[float, float]] = {
-    "n": (1.0, 0.0),
+# Matches ``move_directional`` JSON schema ``direction`` enum.
+_DIRECTION_UNIT: dict[str, tuple[float, float]] = {
     "north": (1.0, 0.0),
-    "s": (-1.0, 0.0),
     "south": (-1.0, 0.0),
-    "e": (0.0, 1.0),
     "east": (0.0, 1.0),
-    "w": (0.0, -1.0),
     "west": (0.0, -1.0),
-    "ne": (1.0, 1.0),
     "northeast": (1.0, 1.0),
-    "north-east": (1.0, 1.0),
-    "nw": (1.0, -1.0),
     "northwest": (1.0, -1.0),
-    "north-west": (1.0, -1.0),
-    "se": (-1.0, 1.0),
     "southeast": (-1.0, 1.0),
-    "south-east": (-1.0, 1.0),
-    "sw": (-1.0, -1.0),
     "southwest": (-1.0, -1.0),
-    "south-west": (-1.0, -1.0),
 }
-
-_TURN_AROUND_SYNONYMS = {"turn_around", "around", "u_turn", "u-turn", "reverse_heading"}
-_DESCEND_SYNONYMS = {"down", "descend", "sink", "lower"}
-_SAFETY_ACTION_SYNONYMS: dict[str, str] = {
+_SAFETY_ACTION_MAP: dict[str, str] = {
     "stop": "stop",
-    "halt": "stop",
     "hold": "hold",
-    "pause": "hold",
     "abort": "abort",
-    "cancel": "abort",
     "return": "return_home",
     "return_home": "return_home",
-    "return_to_home": "return_home",
-    "rtl": "return_home",
 }
 
 
@@ -77,7 +65,7 @@ def append_waypoint(
         latitude_deg=lat,
         longitude_deg=lon,
         relative_altitude_m=ctx.current_altitude_m,
-        speed_m_s=1.0,
+        speed_m_s=1.75,
         is_fly_through=is_fly_through,
         vehicle_action=vehicle_action,
         loiter_time_s=loiter_time_s,
@@ -108,11 +96,36 @@ def handle_move(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     )
 
 
+def handle_goto_lat_lon(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Fly to absolute WGS84 lat/lon in the same local frame as other intents (telemetry origin base)."""
+    lat = require_float(intent, "latitude_deg")
+    lon = require_float(intent, "longitude_deg")
+    north_target, east_target = compute_north_east_offset_m(
+        ctx.base_latitude_deg,
+        ctx.base_longitude_deg,
+        lat,
+        lon,
+    )
+    north_delta_m = north_target - ctx.north_total_m
+    east_delta_m = east_target - ctx.east_total_m
+    ctx.north_total_m = north_target
+    ctx.east_total_m = east_target
+    if "altitude_m" in intent:
+        ctx.current_altitude_m = clamp_relative_altitude_m(require_float(intent, "altitude_m"))
+    append_waypoint(
+        ctx,
+        vehicle_action=0,
+        is_fly_through=False,
+        north_delta_m=north_delta_m,
+        east_delta_m=east_delta_m,
+    )
+
+
 def handle_move_directional(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     direction_raw = str(intent.get("direction", "")).strip().lower()
-    if direction_raw not in _DIRECTION_VECTORS:
+    if direction_raw not in _DIRECTION_UNIT:
         raise ValueError(f"unsupported world-frame direction: {direction_raw!r}")
-    north_unit, east_unit = _DIRECTION_VECTORS[direction_raw]
+    north_unit, east_unit = _DIRECTION_UNIT[direction_raw]
     distance_m = optional_float(intent, "distance_m", _DEFAULT_DIRECTIONAL_DISTANCE_M)
     if distance_m <= 0.0:
         raise ValueError("distance_m must be > 0")
@@ -121,10 +134,20 @@ def handle_move_directional(ctx: ExpansionContext, intent: Mapping[str, Any]) ->
     handle_move(ctx, {"north_m": north_m, "east_m": east_m, "up_m": 0.0})
 
 
+def handle_move_bearing(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """World-frame move along a compass bearing: ``bearing_deg`` clockwise from north (0°=N, 90°=E)."""
+    distance_m = require_float(intent, "distance_m")
+    bearing_deg = require_float(intent, "bearing_deg")
+    if distance_m <= 0.0:
+        raise ValueError("distance_m must be > 0")
+    north_m, east_m = north_east_m_from_bearing_deg(distance_m, bearing_deg)
+    handle_move(ctx, {"north_m": north_m, "east_m": east_m, "up_m": 0.0})
+
+
 def handle_move_vertical(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     direction_raw = str(intent.get("direction", "down")).strip().lower()
-    if direction_raw not in _DESCEND_SYNONYMS:
-        raise ValueError("move_vertical only supports descending direction in phase 1")
+    if direction_raw != "down":
+        raise ValueError("move_vertical only supports direction=down")
     distance_m = optional_float(intent, "distance_m", 5.0)
     if distance_m <= 0.0:
         raise ValueError("distance_m must be > 0")
@@ -133,16 +156,15 @@ def handle_move_vertical(ctx: ExpansionContext, intent: Mapping[str, Any]) -> No
 
 def handle_turn_relative(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     maneuver = str(intent.get("maneuver", "turn_around")).strip().lower()
-    degrees = optional_float(intent, "degrees", 180.0)
-    if maneuver not in _TURN_AROUND_SYNONYMS and abs(degrees - 180.0) > 1e-9:
-        raise ValueError("turn_relative only supports turn-around (180 degrees) in phase 1")
+    if maneuver != "turn_around":
+        raise ValueError("turn_relative only supports maneuver=turn_around")
     handle_yaw(ctx, {"degrees": normalize_yaw((ctx.pending_yaw_deg or 0.0) + 180.0)})
     append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=0.0)
 
 
 def handle_safety_control(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     raw_action = str(intent.get("action", "")).strip().lower()
-    action = _SAFETY_ACTION_SYNONYMS.get(raw_action)
+    action = _SAFETY_ACTION_MAP.get(raw_action)
     if action is None:
         raise ValueError(f"unsupported safety action: {raw_action!r}")
     if action == "return_home":
@@ -166,8 +188,7 @@ def handle_yaw(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
     ctx.pending_yaw_deg = normalize_yaw(require_float(intent, "degrees"))
 
 
-def handle_return_to_home(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    del intent
+def handle_return_to_home(ctx: ExpansionContext, _intent: Mapping[str, Any]) -> None:
     north_delta_m = -ctx.north_total_m
     east_delta_m = -ctx.east_total_m
     ctx.north_total_m = 0.0
@@ -181,6 +202,5 @@ def handle_return_to_home(ctx: ExpansionContext, intent: Mapping[str, Any]) -> N
     )
 
 
-def handle_land(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
-    del intent
+def handle_land(ctx: ExpansionContext, _intent: Mapping[str, Any]) -> None:
     append_waypoint(ctx, vehicle_action=2, is_fly_through=False)
