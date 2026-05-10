@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TOTAL_STEPS=10
+TOTAL_STEPS=11
 CURRENT_STEP=0
 START_TS="$(date +%s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Git checkout root (parent of agent/)
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VENV_PATH="${REPO_ROOT}/.venv"
 
-declare -a PASS_ITEMS=()
 declare -a WARN_ITEMS=()
 declare -a FAIL_ITEMS=()
 
@@ -55,14 +53,6 @@ run_sudo() {
   fi
 }
 
-record_stage_time() {
-  local stage_start="$1"
-  local stage_name="$2"
-  local elapsed
-  elapsed="$(( $(date +%s) - stage_start ))"
-  info "Stage '${stage_name}' finished in ${elapsed}s"
-}
-
 apt_install_with_fallback() {
   local pkg
   local -a candidates=("$@")
@@ -76,46 +66,181 @@ apt_install_with_fallback() {
   return 1
 }
 
-camera_list_cmd() {
-  if command -v rpicam-hello >/dev/null 2>&1; then
-    echo "rpicam-hello --list-cameras"
-    return 0
+# SKIP_ARDUCAM_PRIVARIETY_INSTALL=1 skips; override URL with ARDUCAM_PIVARIETY_INSTALL_SCRIPT_URL.
+install_arducam_pivariety_native_stack() {
+  local def_url dl_url installer
+  if [ "${SKIP_ARDUCAM_PRIVARIETY_INSTALL:-}" = "1" ]; then
+    info "Skipping Arducam install_pivariety_pkgs.sh (SKIP_ARDUCAM_PRIVARIETY_INSTALL=1)"
+    return 1
   fi
-  if command -v libcamera-hello >/dev/null 2>&1; then
-    echo "libcamera-hello --list-cameras"
-    return 0
+  def_url="https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh"
+  dl_url="${ARDUCAM_PIVARIETY_INSTALL_SCRIPT_URL:-${def_url}}"
+  installer="$(mktemp)"
+
+  if command -v curl >/dev/null 2>&1 && curl -fLsso "${installer}" "${dl_url}"; then
+    :
+  elif command -v wget >/dev/null 2>&1 && wget -qO "${installer}" "${dl_url}"; then
+    :
+  else
+    rm -f "${installer}"
+    warn "Could not download install script (curl or wget). Trying APT fallback for camera CLI."
+    WARN_ITEMS+=("Arducam installer download failed")
+    return 1
   fi
-  return 1
+
+  chmod +x "${installer}"
+
+  for p in libcamera_dev libcamera_apps 64mp_pi_hawk_eye_kernel_driver; do
+    info "install_pivariety_pkgs.sh -p ${p}"
+    if ! run_sudo bash "${installer}" -p "${p}"; then
+      rm -f "${installer}"
+      warn "install_pivariety_pkgs.sh failed: ${p}"
+      WARN_ITEMS+=("Arducam pivariety -p ${p} failed")
+      return 1
+    fi
+  done
+
+  rm -f "${installer}"
+  ok "Arducam libcamera/apps/driver installer finished"
 }
 
-# libcamera exposes cameras to apps when the login user can access platform device nodes (often video/render groups).
+camera_list_cmd() {
+  local c=""
+  if command -v rpicam-still >/dev/null 2>&1; then c="rpicam-still"
+  elif command -v rpicam-hello >/dev/null 2>&1; then c="rpicam-hello"
+  elif command -v libcamera-still >/dev/null 2>&1; then c="libcamera-still"
+  elif command -v libcamera-hello >/dev/null 2>&1; then c="libcamera-hello"
+  else return 1
+  fi
+  echo "${c} --list-cameras"
+}
+
 ensure_camera_device_groups() {
   local tgt=""
-  if [ "$(id -u)" -eq 0 ]; then
-    tgt="${SUDO_USER:-}"
-  else
-    tgt="${USER:-}"
-  fi
-  if [ -z "${tgt}" ] || [ "${tgt}" = "root" ]; then
-    return 0
-  fi
+  [ "$(id -u)" -eq 0 ] && tgt="${SUDO_USER:-}" || tgt="${USER:-}"
+  [ -z "${tgt}" ] || [ "${tgt}" = root ] && return 0
+
   for g in video render; do
     if id -nG "${tgt}" 2>/dev/null | tr ' ' '\n' | grep -qx "${g}"; then
       continue
     fi
-    if run_sudo usermod -aG "${g}" "${tgt}"; then
-      ok "Added user ${tgt} to group ${g} (log out/in or reboot may be needed for the session)"
-    else
-      warn "Could not add ${tgt} to group ${g}"
-    fi
+    run_sudo usermod -aG "${g}" "${tgt}" && ok "Added ${tgt} to group ${g}" || warn "Could not add ${tgt} to ${g}"
   done
 }
 
-ensure_uv() {
-  if command -v uv >/dev/null 2>&1; then
+ARDUCAM_64MP_CAM1_DT="dtoverlay=arducam-64mp,cam1"
+
+resolve_rpi_boot_config_txt() {
+  if run_sudo test -r /boot/firmware/config.txt; then
+    printf '%s\n' '/boot/firmware/config.txt'
+  elif run_sudo test -r /boot/config.txt; then
+    printf '%s\n' '/boot/config.txt'
+  fi
+}
+
+ensure_camera_auto_detect_disabled() {
+  local bc="$1" out=""
+  # Sets active camera_auto_detect lines to =0 or appends [all]/camera_auto_detect=0 when missing.
+  if ! out="$(run_sudo python3 - "${bc}" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+
+with open(path, "r", encoding="utf-8", errors="replace") as f:
+    raw = f.read()
+
+
+def lf(s):
+    return s.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def has_uncommented(lines):
+    for ln in lines:
+        t = ln.lstrip()
+        if t.startswith("#"):
+            continue
+        if re.match(r"camera_auto_detect\s*=", t):
+            return True
+    return False
+
+
+lines = lf(raw).split("\n")
+out_lines = []
+
+for ln in lines:
+    t = ln.lstrip()
+    if t.startswith("#"):
+        out_lines.append(ln)
+        continue
+    if re.match(r"camera_auto_detect\s*=", t):
+        ws = ln[: len(ln) - len(t)]
+        out_lines.append(f"{ws}camera_auto_detect=0")
+        continue
+    out_lines.append(ln)
+
+if not has_uncommented(out_lines):
+    out_lines.extend(
+        [
+            "",
+            "# setup_pi_hailo_arducam: third-party CSI",
+            "[all]",
+            "camera_auto_detect=0",
+        ]
+    )
+
+new_txt = lf("\n".join(out_lines) + "\n")
+old_txt = lf(raw)
+old_canon = old_txt if old_txt.endswith("\n") else (old_txt + "\n" if old_txt else "")
+
+print("CHANGED" if new_txt != old_canon else "UNCHANGED", end="\n")
+
+if new_txt != old_canon:
+    with open(path, "w", encoding="utf-8", newline="\n") as fp:
+        fp.write(new_txt)
+PY
+  )"; then
+    warn "Could not patch camera_auto_detect in ${bc}"
+    WARN_ITEMS+=("camera_auto_detect firmware edit failed")
     return 0
   fi
-  info "uv not found; installing to ~/.local/bin via astral.sh installer"
+  case "${out}" in
+    CHANGED*)
+      ok "Firmware ${bc}: camera_auto_detect forced off for third-party camera"
+      ;;
+    UNCHANGED*)
+      ok "Firmware ${bc}: camera_auto_detect already ok"
+      ;;
+    *)
+      warn "Unexpected firmware helper output."
+      WARN_ITEMS+=("camera_auto_detect tooling output ambiguous")
+      ;;
+  esac
+}
+
+ensure_arducam64mp_cam1_dtoverlay() {
+  local bc="$1"
+
+  if run_sudo grep -qFx "${ARDUCAM_64MP_CAM1_DT}" "${bc}"; then
+    ok "${bc} already has ${ARDUCAM_64MP_CAM1_DT}"
+    return 0
+  fi
+
+  if run_sudo grep -qF "arducam-64mp" "${bc}"; then
+    warn "${bc} references arducam-64mp with a different option than '${ARDUCAM_64MP_CAM1_DT}'. Edit manually."
+    WARN_ITEMS+=("config.txt arducam line mismatch")
+    return 0
+  fi
+
+  {
+    printf '%s\n' "" "# setup_pi_hailo_arducam: Arducam 64MP CAM1" "[all]" "${ARDUCAM_64MP_CAM1_DT}"
+  } | run_sudo tee -a "${bc}" >/dev/null
+  ok "Appended ${ARDUCAM_64MP_CAM1_DT} to ${bc} (reboot to apply firmware)"
+}
+
+ensure_uv() {
+  command -v uv >/dev/null 2>&1 && return 0
+  info "Installing uv (~/.local/bin)"
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="${HOME}/.local/bin:${PATH}"
 }
@@ -128,179 +253,102 @@ if [ ! -f "${REPO_ROOT}/pyproject.toml" ]; then
   exit 1
 fi
 if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
-  fail "This script needs root privileges. Re-run as root or install sudo."
+  fail "This script needs sudo or root."
   exit 1
 fi
 if ! command -v uv >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
-  info "Installing curl (needed to bootstrap uv)"
-  run_sudo apt-get update
-  run_sudo apt-get install -y curl
+  run_sudo apt-get update && run_sudo apt-get install -y curl
 fi
-if ! command -v uv >/dev/null 2>&1; then
-  require_cmd curl
-fi
+! command -v uv >/dev/null 2>&1 && require_cmd curl
+
 ensure_uv
 require_cmd uv
-info "Repo root: ${REPO_ROOT}"
-info "Python: $(python3 --version 2>&1)"
-if [ -f /etc/os-release ]; then
-  info "OS: $(. /etc/os-release && echo "${PRETTY_NAME:-unknown}")"
-fi
-PASS_ITEMS+=("Preflight checks passed")
+info "Repo root: ${REPO_ROOT}  Python: $(python3 --version 2>&1)"
+[ -f /etc/os-release ] && info "$(. /etc/os-release && echo "${PRETTY_NAME:-unknown}")"
 
 step "APT refresh and base tools"
-stage_start="$(date +%s)"
 run_sudo apt-get update
 run_sudo apt-get install -y \
-  curl \
-  jq \
-  pciutils \
-  dkms \
-  python3-dev \
-  pkg-config
-# libatlas-base-dev was common on older Raspberry Pi OS; Debian Trixie+ dropped it in favor of OpenBLAS.
-if apt_install_with_fallback libatlas-base-dev libopenblas-dev; then
-  ok "BLAS dev headers installed (ATLAS or OpenBLAS)"
-else
-  warn "Could not install libatlas-base-dev or libopenblas-dev; continuing (only needed for some native Python builds)"
-fi
-ok "Base tools installed"
-record_stage_time "${stage_start}" "APT refresh and base tools"
-PASS_ITEMS+=("Base tools installed")
+  curl jq pciutils dkms python3-dev pkg-config
 
-step "Install native camera stack (Picamera2/libcamera)"
-stage_start="$(date +%s)"
+apt_install_with_fallback libatlas-base-dev libopenblas-dev || warn "Optional BLAS dev headers not installed"
+
+step "Firmware config (camera_auto_detect + Arducam overlay)"
+_bc="$(resolve_rpi_boot_config_txt)"
+if [ -z "${_bc}" ]; then
+  warn "No /boot/.../config.txt readable; skipping firmware edits."
+  WARN_ITEMS+=("boot config.txt unavailable")
+else
+  ensure_camera_auto_detect_disabled "${_bc}"
+  ensure_arducam64mp_cam1_dtoverlay "${_bc}"
+fi
+unset _bc
+
+step "Camera stack (Arducam pivariety or APT fallback + Picamera2)"
+if install_arducam_pivariety_native_stack; then
+  ok "Arducam install_pivariety_pkgs steps completed"
+else
+  apt_install_with_fallback libcamera-apps rpicam-apps || WARN_ITEMS+=("No stock libcamera-apps/rpicam-apps")
+fi
 run_sudo apt-get install -y python3-picamera2
-if apt_install_with_fallback libcamera-apps rpicam-apps; then
-  PASS_ITEMS+=("Camera CLI package installed")
-else
-  WARN_ITEMS+=("Could not install libcamera/rpicam CLI apps")
-fi
-ok "Camera Python stack installed"
 ensure_camera_device_groups
-record_stage_time "${stage_start}" "Camera stack install"
-PASS_ITEMS+=("Picamera2 installed")
 
-step "Install project Python runtime (uv sync, repo root)"
-stage_start="$(date +%s)"
+step "Python project deps (uv sync)"
 cd "${REPO_ROOT}"
-export PATH="${HOME}/.local/bin:${PATH}"
-# --system-site-packages: APT packages (python3-picamera2, hailo bindings) live in system site-packages
+export PATH="${HOME}/.local/bin}:${PATH}"
+
 if [ -d "${VENV_PATH}" ]; then
-  info "Using existing venv at ${VENV_PATH} (delete it for a completely clean Python env)"
   uv venv --python 3.13 --system-site-packages --allow-existing "${VENV_PATH}"
 else
   uv venv --python 3.13 --system-site-packages "${VENV_PATH}"
 fi
 uv sync
-ok "Project dependencies installed with uv at ${VENV_PATH}"
-record_stage_time "${stage_start}" "Python dependencies"
-PASS_ITEMS+=("Python dependencies installed (uv sync)")
+ok "uv sync done at ${VENV_PATH}"
 
-step "Install Hailo runtime packages (hailo-all path)"
-stage_start="$(date +%s)"
-if run_sudo apt-get install -y hailo-all; then
-  ok "Installed hailo-all package"
-  PASS_ITEMS+=("hailo-all installed")
-else
-  warn "hailo-all install failed. Ensure Hailo APT repository is configured for your image."
-  WARN_ITEMS+=("hailo-all package not installed")
-fi
-record_stage_time "${stage_start}" "Hailo package install"
+step "Hailo packages (hailo-all)"
+run_sudo apt-get install -y hailo-all \
+  || WARN_ITEMS+=("hailo-all not installed")
 
-step "Verify Hailo runtime/driver handshake"
-stage_start="$(date +%s)"
+step "Verify Hailo (hailortcli)"
 if command -v hailortcli >/dev/null 2>&1; then
-  if hailortcli fw-control identify >/tmp/hailort_identify.out 2>&1; then
-    ok "hailortcli identifies Hailo device and firmware"
-    PASS_ITEMS+=("hailortcli fw-control identify passed")
-  else
-    warn "hailortcli exists but identify failed (often fixed by reboot after install)"
-    WARN_ITEMS+=("hailortcli identify failed")
-  fi
+  hailortcli fw-control identify >/tmp/hailort_identify.out 2>&1 \
+    || WARN_ITEMS+=("hailortcli identify failed; try reboot")
 else
-  warn "hailortcli not found after install"
-  WARN_ITEMS+=("hailortcli command missing")
+  warn "hailortcli missing"
+  WARN_ITEMS+=("hailortcli missing")
 fi
-record_stage_time "${stage_start}" "Hailo runtime verify"
 
-step "Verify camera enumeration"
-stage_start="$(date +%s)"
+step "Camera CLI list test"
 if cam_cmd="$(camera_list_cmd)"; then
-  if [ "${cam_cmd}" = "rpicam-hello --list-cameras" ]; then
-    rpicam-hello --list-cameras >/tmp/camera_list.out 2>&1
-    cam_rc=$?
-  else
-    libcamera-hello --list-cameras >/tmp/camera_list.out 2>&1
-    cam_rc=$?
-  fi
-  if [ "${cam_rc}" -eq 0 ]; then
-    ok "Camera enumerated with: ${cam_cmd}"
-    PASS_ITEMS+=("Camera detected by libcamera/rpicam")
-  else
-    warn "Camera list command failed: ${cam_cmd}"
-    WARN_ITEMS+=("Camera enumeration command failed")
-  fi
+  bash -c "${cam_cmd}" >/tmp/camera_list.out 2>&1 \
+    || WARN_ITEMS+=("camera list CLI failed: ${cam_cmd}")
 else
-  warn "No camera list CLI found (neither rpicam-hello nor libcamera-hello)"
-  WARN_ITEMS+=("No camera CLI tool found")
+  warn "No rpicam*/libcamera* CLI"
+  WARN_ITEMS+=("no camera CLI in PATH")
 fi
-record_stage_time "${stage_start}" "Camera enumeration"
 
-step "Verify Hailo PCIe visibility"
-stage_start="$(date +%s)"
-if lspci | grep -qi hailo; then
-  ok "Hailo device found on PCIe"
-  PASS_ITEMS+=("Hailo PCIe device visible")
-else
-  warn "Hailo PCIe device not found in lspci output"
-  WARN_ITEMS+=("Hailo PCIe device not visible")
-fi
-if dmesg 2>/dev/null | grep -qi hailo; then
-  ok "Kernel log contains Hailo entries"
-  PASS_ITEMS+=("Kernel has Hailo messages")
-else
-  warn "No Hailo entries found in dmesg (may require root or driver not loaded)"
-  WARN_ITEMS+=("No Hailo dmesg entries")
-fi
-record_stage_time "${stage_start}" "Hailo PCIe checks"
+step "Hailo PCIe / dmesg"
+lspci 2>/dev/null | grep -qi hailo || WARN_ITEMS+=("no Hailo in lspci")
+dmesg 2>/dev/null | grep -qi hailo || WARN_ITEMS+=("no Hailo in dmesg")
 
-step "Picamera2 frame capture smoke test"
-stage_start="$(date +%s)"
-smoke_picam2_py="$(mktemp)"
-cleanup_picam_smoke() {
-  rm -f "${smoke_picam2_py}"
-}
-trap cleanup_picam_smoke EXIT
+step "Picamera2 smoke capture"
+smoke="$(mktemp)"
+trap 'rm -f "${smoke}"' EXIT
 
-cat >"${smoke_picam2_py}" <<'PY'
+cat >"${smoke}" <<'PY'
 import sys
 import time
 from picamera2 import Picamera2
 
 infos = []
-for attempt in range(1, 6):
+for _ in range(3):
     infos = Picamera2.global_camera_info()
     if infos:
         break
-    print(
-        "Picamera2.global_camera_info() empty (attempt %d/5); waiting for cameras..."
-        % (attempt,),
-        file=sys.stderr,
-    )
-    time.sleep(1.5)
+    time.sleep(1.0)
 
 if not infos:
-    print(
-        "No cameras visible to Picamera2 (CLI may still list cameras). ",
-        file=sys.stderr,
-        end="",
-    )
-    print(
-        "Typical fixes: ensure this user is in groups 'video' and 'render', then log out and back in; "
-        "or run once with: sg video -c 'YOUR_VENV/bin/python SCRIPT.py'",
-        file=sys.stderr,
-    )
+    print("Picamera2: no cameras in global_camera_info()", file=sys.stderr)
     sys.exit(1)
 
 cam = Picamera2(camera_num=0)
@@ -311,89 +359,57 @@ frame = cam.capture_array("main")
 cam.stop()
 cam.close()
 assert frame is not None and frame.size > 0
-print("Frame shape:", frame.shape)
+print("Picamera2 frame:", frame.shape)
 PY
 
-if "${VENV_PATH}/bin/python" "${smoke_picam2_py}"; then
-  ok "Picamera2 captured a frame successfully"
-  PASS_ITEMS+=("Picamera2 capture smoke test passed")
-elif \
-  [ "$(id -u)" -ne 0 ] \
-    && command -v sg >/dev/null 2>&1 \
-    && sg video -c "$(printf '%q %q' "${VENV_PATH}/bin/python" "${smoke_picam2_py}")"
+if "${VENV_PATH}/bin/python" "${smoke}"; then
+  ok "Picamera2 capture ok"
+elif [ "$(id -u)" -ne 0 ] && command -v sg >/dev/null 2>&1 \
+  && sg video -c "$(printf '%q %q' "${VENV_PATH}/bin/python" "${smoke}")"
 then
-  ok "Picamera2 captured via sg video (session did not yet have video group)"
-  PASS_ITEMS+=("Picamera2 capture smoke test passed (sg video)")
+  ok "Picamera2 capture ok (sg video)"
 else
-  fail "Picamera2 frame capture failed"
-  FAIL_ITEMS+=("Picamera2 capture smoke test failed")
+  fail "Picamera2 capture failed"
+  FAIL_ITEMS+=("Picamera2 smoke test failed")
 fi
-cleanup_picam_smoke
+rm -f "${smoke}"
 trap - EXIT
-record_stage_time "${stage_start}" "Picamera2 smoke test"
 
-step "Hailo Python binding smoke test"
-stage_start="$(date +%s)"
-if "${VENV_PATH}/bin/python" - <<'PY'
+step "Hailo Python (hailo_platform)"
+"${VENV_PATH}/bin/python" - <<'PY' || WARN_ITEMS+=("hailo_platform smoke failed")
 from hailo_platform import VDevice
 v = VDevice()
 v.release()
-print("hailo_platform import and VDevice creation OK")
+print("hailo_platform OK")
 PY
-then
-  ok "hailo_platform import and VDevice creation succeeded"
-  PASS_ITEMS+=("hailo_platform smoke test passed")
-else
-  warn "hailo_platform smoke test failed"
-  WARN_ITEMS+=("hailo_platform import/VDevice failed")
-fi
-record_stage_time "${stage_start}" "Hailo Python smoke test"
 
 echo
-echo "================ FINAL SUMMARY ================"
-echo "PASS ITEMS (${#PASS_ITEMS[@]}):"
-for item in "${PASS_ITEMS[@]}"; do
-  echo "  - ${item}"
-done
+echo "================ SUMMARY ================="
+TOTAL_ELAPSED="$(( $(date +%s) - START_TS ))"
+echo "Elapsed: ${TOTAL_ELAPSED}s"
 
-echo "WARN ITEMS (${#WARN_ITEMS[@]}):"
-if [ "${#WARN_ITEMS[@]}" -eq 0 ]; then
-  echo "  - none"
-else
+if [ "${#WARN_ITEMS[@]}" -gt 0 ]; then
+  echo "Warnings (${#WARN_ITEMS[@]}):"
   for item in "${WARN_ITEMS[@]}"; do
     echo "  - ${item}"
   done
+else
+  echo "Warnings: none"
 fi
 
-echo "FAIL ITEMS (${#FAIL_ITEMS[@]}):"
-if [ "${#FAIL_ITEMS[@]}" -eq 0 ]; then
-  echo "  - none"
-else
+if [ "${#FAIL_ITEMS[@]}" -gt 0 ]; then
+  echo "Failures (${#FAIL_ITEMS[@]}):"
   for item in "${FAIL_ITEMS[@]}"; do
     echo "  - ${item}"
   done
-fi
-
-TOTAL_ELAPSED="$(( $(date +%s) - START_TS ))"
-echo "Total elapsed: ${TOTAL_ELAPSED}s"
-echo "==============================================="
-echo "Remediation hints:"
-echo "  - SSH 'Connection reset by peer' after 'sudo reboot' is normal: the Pi restarted; reconnect when it is back."
-echo "  - Picamera2 sees no cameras but rpicam does: add user to groups video + render, reboot or log out/in, or rerun smoke with 'sg video'."
-echo "  - Camera not found or capture fails: check CSI cable orientation, then run 'rpicam-hello --list-cameras'."
-echo "  - Hailo not visible on PCIe: reseat Hailo module, confirm PCIe ribbon/hat wiring, reboot, then run 'lspci | grep -i hailo'."
-echo "  - Hailo runtime not ready: reboot, then run 'hailortcli fw-control identify' and check it reports HAILO8/HAILO8L."
-echo "  - hailo_platform import fails: install Hailo apt repo and rerun 'sudo apt-get install -y hailo-all'."
-echo "  - Python deps: from repo root run 'uv sync'; add pytest with 'uv sync --extra dev'; model export tools with 'uv sync --extra export'."
-echo "  - Picamera2/Hailo in venv: this script uses 'uv venv --system-site-packages' so APT python3-picamera2 and hailo packages are visible."
-
-if [ "${#FAIL_ITEMS[@]}" -gt 0 ]; then
-  fail "Setup completed with failures."
+  echo
+  echo "Tips: firmware edits need reboot; Arducam: https://docs.arducam.com/Raspberry-Pi-Camera/Native-camera/64MP-Hawkeye/"
+  fail "Finished with failures."
   exit 2
 fi
 
 if [ "${#WARN_ITEMS[@]}" -gt 0 ]; then
-  warn "Setup completed with warnings. Review WARN ITEMS above."
+  warn "Finished with warnings (see above)."
 else
-  ok "Setup completed successfully."
+  ok "Finished successfully."
 fi
