@@ -37,6 +37,7 @@ from typing import Any
 import numpy as np
 
 from .coco_names import COCO_CLASSES
+from .paths import resolve_model_file
 from .yolo_onnx import Detection, _letterbox, _scale_boxes_back, nms_xyxy
 
 try:
@@ -211,7 +212,7 @@ class YoloHailoDetector:
         path = hef_path or os.environ.get("YOLO_HEF_PATH", "models/yolo26n_b8.hef")
         p = Path(path)
         if not p.is_absolute():
-            p = (Path(__file__).resolve().parents[2] / p).resolve()
+            p = resolve_model_file(p)
         path = str(p)
         if not os.path.isfile(path):
             raise FileNotFoundError(

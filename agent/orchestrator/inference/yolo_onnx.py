@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from .coco_names import COCO_CLASSES
+from .paths import resolve_model_file
 
 # Input Params
 _DEFAULT_IMGSZ = 640
@@ -116,7 +117,7 @@ class Yolo26OnnxDetector:
         path = model_path or os.environ.get("YOLO_ONNX_PATH", "models/yolo26n.onnx")
         p = Path(path)
         if not p.is_absolute():
-            p = (Path(__file__).resolve().parents[2] / p).resolve()
+            p = resolve_model_file(p)
         path = str(p)
         if not os.path.isfile(path):
             raise FileNotFoundError(

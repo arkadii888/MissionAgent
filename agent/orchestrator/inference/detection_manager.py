@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from .paths import resolve_model_file
 from .yolo_hailo import hailo_platform_available
 from .yolo_onnx import Detection, Yolo26OnnxDetector
 
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 _HISTORY_MAX = 100
 _FPS_EMA_ALPHA = 0.15
 _LOG_INTERVAL_SEC = 1.0
-_AGENT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_model_path(path: str | None) -> str | None:
@@ -28,7 +28,7 @@ def _resolve_model_path(path: str | None) -> str | None:
     p = Path(path)
     if p.is_absolute():
         return str(p)
-    return str((_AGENT_ROOT / p).resolve())
+    return str(resolve_model_file(p))
 
 
 @dataclass
