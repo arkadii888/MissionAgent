@@ -5,29 +5,30 @@ Requires Raspberry Pi OS packages that provide `hailo_platform` and a
 compatible .hef for your accelerator (Hailo-8 vs Hailo-8L).
 
 Supports:
-- End-to-end export: single output (1, N, 6+) with x1,y1,x2,y2,conf,class in letterbox space
-  (same parsing as yolo_onnx).
+- End-to-end export: single output (1, N, 6+) with x1,y1,x2,y2,conf,class in letterbox space.
 - Multi-head export (6 outputs): cls/reg at 80/40/20 grids — Python postprocess (logit threshold).
 
-**Default (recommended for preview / avoiding coordinate bugs):** the whole frame is letterboxed
-once to the HEF input size (e.g. 640×640), one inference, boxes mapped back with the same
-letterbox metadata — no sliding windows (`YOLO_HAILO_FRAME_MODE=letterbox`, default).
+**Default:** **`YOLO_NUMBER_TILES=1`** — the full frame is letterboxed once to the HEF input
+(e.g. 640×640), one inference, boxes mapped back with the same letterbox metadata.
 
-**Optional:** sliding-window tiling over the image (`YOLO_HAILO_FRAME_MODE=tile`). Each window
-uses the same 640×640 letterbox to the HEF; set **YOLO_TILE_COVER** (default 640),
-**YOLO_TILE_OVERLAP** / **YOLO_TILE_STRIDE** for overlap. Use for full-res main-stream capture
-when objects are small in the frame.
+**Multi-tile:** set **`YOLO_NUMBER_TILES`** > 1 to split each frame into a **rows×cols**
+grid with `rows*cols == N` (layout chosen to match frame aspect). Each cell is cropped from the
+full-res frame, **letterboxed** to the HEF input (e.g. 640²), inferred, then boxes are mapped back
+to crop pixels and **offset** into full-frame coordinates; **global NMS** merges duplicates at
+seams. **`N` is clamped** per frame to at most **`ceil(W/model_w) * ceil(H/model_h)`** (the
+finest non-overlapping 640-style cover of the frame).
 
-Env: YOLO_HAILO_FRAME_MODE, YOLO_TILE_COVER (or legacy YOLO_TILE_SIZE), YOLO_TILE_OVERLAP /
-YOLO_TILE_STRIDE, PERSON_NMS_IOU, YOLO_PERSON_ONLY. Runtime: get_runtime_info() / GET /health.
+Env: **YOLO_NUMBER_TILES**, YOLO_HAILO_FRAME_MODE (informational / health), PERSON_NMS_IOU,
+YOLO_PERSON_ONLY. Runtime: get_runtime_info() / GET /health.
 
-Speed: larger YOLO_TILE_COVER, less overlap, lower CAPTURE_SIZE, skip frames in the app loop,
+Speed: lower YOLO_NUMBER_TILES or CAPTURE_SIZE, skip frames in the app loop,
 or use a HEF with true input batch>1. Stacking 8 inputs only works when the HEF input tensor
 actually supports batch 8.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ import numpy as np
 
 from .coco_names import COCO_CLASSES
 from .paths import resolve_model_file
-from .yolo_onnx import Detection, _letterbox, _scale_boxes_back, nms_xyxy
+from .yolo_common import Detection, _letterbox, _scale_boxes_back, nms_xyxy
 
 try:
     from hailo_platform import (
@@ -53,6 +54,8 @@ try:
     )
 except ImportError:
     HEF = None  # type: ignore[misc, assignment]
+
+logger = logging.getLogger(__name__)
 
 
 def hailo_platform_available() -> bool:
@@ -149,40 +152,78 @@ class _TileSpec:
     crop_w: int
 
 
-def _axis_tile_starts(length: int, tile: int, stride: int) -> list[int]:
+def _max_tiles_for_frame(
+    frame_h: int, frame_w: int, model_in_h: int, model_in_w: int
+) -> int:
     """
-    Starting positions along one axis so every pixel is covered by at least one
-    window of size `tile`, stepping by `stride` (overlap = tile - stride when stride < tile).
+    Upper bound on tile count: minimum number of model-sized rectangles needed to cover the frame
+    (same count as a non-overlapping grid of model_in_w × model_in_h windows).
     """
-    if length <= 0:
-        return []
-    if length <= tile:
-        return [0]
-    stride = max(1, min(stride, tile))
-    starts: list[int] = []
-    pos = 0
-    while pos + tile < length:
-        starts.append(pos)
-        pos += stride
-    last = length - tile
-    if not starts or last > starts[-1]:
-        starts.append(last)
-    return starts
-
-
-def _iter_tiles(
-    frame_h: int, frame_w: int, tile: int, stride: int | None = None
-) -> list[_TileSpec]:
     if frame_h <= 0 or frame_w <= 0:
+        return 1
+    cw = max(1, int(model_in_w))
+    ch = max(1, int(model_in_h))
+    return max(1, math.ceil(frame_w / cw) * math.ceil(frame_h / ch))
+
+
+def _grid_shapes_with_n_tiles(n: int) -> list[tuple[int, int]]:
+    """Unique (rows, cols) with rows * cols == n, rows >= 1, cols >= 1."""
+    if n < 1:
+        return [(1, 1)]
+    if n == 1:
+        return [(1, 1)]
+    pairs: set[tuple[int, int]] = set()
+    i = 1
+    while i * i <= n:
+        if n % i == 0:
+            j = n // i
+            pairs.add((i, j))
+            pairs.add((j, i))
+        i += 1
+    return sorted(pairs)
+
+
+def _best_grid_shape(n: int, frame_w: int, frame_h: int) -> tuple[int, int]:
+    """
+    Pick rows, cols with rows * cols == n so each tile's aspect ratio (w/h) is closest to the
+    full frame's aspect. Tie: prefer more columns on landscape, more rows on portrait.
+    """
+    if n <= 1 or frame_w <= 0 or frame_h <= 0:
+        return (1, 1)
+    target_log_ar = math.log(frame_w / frame_h)
+    best: tuple[int, int] = (1, n)
+    best_score = float("inf")
+    landscape = frame_w >= frame_h
+    for rows, cols in _grid_shapes_with_n_tiles(n):
+        tile_ar = (frame_w * rows) / (frame_h * cols)
+        if tile_ar <= 0:
+            continue
+        score = abs(math.log(tile_ar) - target_log_ar)
+        if score < best_score - 1e-12:
+            best_score = score
+            best = (rows, cols)
+        elif abs(score - best_score) <= 1e-12:
+            br, bc = best
+            if landscape and cols > bc:
+                best = (rows, cols)
+            elif not landscape and rows > br:
+                best = (rows, cols)
+    return best
+
+
+def _grid_specs(frame_h: int, frame_w: int, rows: int, cols: int) -> list[_TileSpec]:
+    """Non-overlapping partition: integer slice bounds cover the full frame."""
+    if frame_h <= 0 or frame_w <= 0 or rows < 1 or cols < 1:
         return []
-    st = tile if stride is None else max(1, min(stride, tile))
-    sy = _axis_tile_starts(frame_h, tile, st)
-    sx = _axis_tile_starts(frame_w, tile, st)
     specs: list[_TileSpec] = []
-    for ty, y0 in enumerate(sy):
-        for tx, x0 in enumerate(sx):
-            crop_h = min(tile, frame_h - y0)
-            crop_w = min(tile, frame_w - x0)
+    for ty in range(rows):
+        y0 = ty * frame_h // rows
+        y1 = (ty + 1) * frame_h // rows
+        for tx in range(cols):
+            x0 = tx * frame_w // cols
+            x1 = (tx + 1) * frame_w // cols
+            crop_h = y1 - y0
+            crop_w = x1 - x0
             if crop_h <= 0 or crop_w <= 0:
                 continue
             specs.append(_TileSpec(tx, ty, y0, x0, crop_h, crop_w))
@@ -222,23 +263,16 @@ class YoloHailoDetector:
         self._conf_threshold = conf_threshold
         self._class_names = COCO_CLASSES
         self._hef_path = path
-        # Region taken from the full frame per tile (e.g. 1024); letterbox down to HEF input (640).
-        cover_raw = os.environ.get("YOLO_TILE_COVER", "").strip()
-        if cover_raw:
-            self._tile_cover = max(32, int(cover_raw))
+        nt_raw = os.environ.get("YOLO_NUMBER_TILES", "").strip()
+        if nt_raw:
+            try:
+                self._number_tiles_requested = max(1, int(nt_raw))
+            except ValueError as e:
+                raise ValueError(
+                    f"YOLO_NUMBER_TILES must be a positive integer, got {nt_raw!r}"
+                ) from e
         else:
-            self._tile_cover = max(32, int(os.environ.get("YOLO_TILE_SIZE", "640")))
-        # Stride between tile origins: default = cover (no overlap). Set YOLO_TILE_OVERLAP>0
-        # or YOLO_TILE_STRIDE to overlap windows so one full person often lies in one tile and
-        # global NMS can merge duplicate boxes (overlap trades speed for fewer duplicate people).
-        stride_raw = os.environ.get("YOLO_TILE_STRIDE", "").strip()
-        overlap_raw = os.environ.get("YOLO_TILE_OVERLAP", "0").strip()
-        if stride_raw:
-            self._tile_stride = max(1, int(stride_raw))
-        else:
-            ov = max(0, int(overlap_raw))
-            self._tile_stride = max(1, self._tile_cover - ov)
-        self._tile_stride = min(self._tile_stride, self._tile_cover)
+            self._number_tiles_requested = 1
         self._nms_iou = float(os.environ.get("PERSON_NMS_IOU", "0.35"))
         self._max_candidates = max(100, int(os.environ.get("YOLO_MAX_CANDIDATES", "3000")))
         self._max_detections = max(1, int(os.environ.get("YOLO_MAX_DETECTIONS", "40")))
@@ -304,10 +338,10 @@ class YoloHailoDetector:
             self._in_h, self._in_w = 640, 640
 
         self._out_mode = self._detect_output_mode()
+        self._last_detect_tiling: dict[str, Any] | None = None
 
     def get_runtime_info(self) -> dict[str, Any]:
         """Introspection for /health: batch size, tiling, and how tiles are scheduled."""
-        overlap = self._tile_cover - self._tile_stride
         if self._frame_mode == "letterbox":
             pattern = "single_full_frame_letterbox_to_model_input"
         else:
@@ -316,7 +350,7 @@ class YoloHailoDetector:
                 if self._in_batch > 1
                 else "serial_infer_per_tile_one_session"
             )
-        return {
+        info: dict[str, Any] = {
             "hef_path": self._hef_path,
             "input_name": self._input_name,
             "input_shape": list(self._in_info[0].shape) if self._in_info else None,
@@ -325,10 +359,11 @@ class YoloHailoDetector:
             "model_input_hw": [self._in_h, self._in_w],
             "hef_batch_size": self._in_batch,
             "frame_mode": self._frame_mode,
-            "tile_cover_px": self._tile_cover,
-            "tile_size": self._tile_cover,
-            "tile_stride": self._tile_stride,
-            "tile_overlap_px": overlap,
+            "yolo_number_tiles_requested": self._number_tiles_requested,
+            "yolo_number_tiles_max_formula": (
+                "per frame: ceil(frame_w / model_input_w) * ceil(frame_h / model_input_h)"
+            ),
+            "tiling": "partition_into_rows_times_cols_then_letterbox_each_crop",
             "output_mode": self._out_mode.kind,
             "inference_scheduling": pattern,
             "model_zoo_batch_column_note": (
@@ -346,6 +381,9 @@ class YoloHailoDetector:
                 "dimension in the input vstream (recompile / different artifact)."
             ),
         }
+        if self._last_detect_tiling is not None:
+            info["last_frame_tiling"] = dict(self._last_detect_tiling)
+        return info
 
     def _detect_output_mode(self) -> _OutputMode:
         outs = self._out_info
@@ -741,10 +779,29 @@ class YoloHailoDetector:
             raise ValueError("Expected RGB image with shape (H, W, 3)")
 
         fh, fw = rgb.shape[0], rgb.shape[1]
-        # Cover can be 1024+ while HEF input stays 640; _preprocess letterboxes each crop.
-        tile = self._tile_cover
-        stride = min(self._tile_stride, tile)
-        specs = _iter_tiles(fh, fw, tile, stride)
+        n_max = _max_tiles_for_frame(fh, fw, self._in_h, self._in_w)
+        n_req = self._number_tiles_requested
+        n_eff = min(n_req, n_max)
+        if n_eff < n_req:
+            logger.debug(
+                "YOLO_NUMBER_TILES=%s exceeds max %s for frame %sx%s; using %s.",
+                n_req,
+                n_max,
+                fw,
+                fh,
+                n_eff,
+            )
+        rows, cols = _best_grid_shape(n_eff, fw, fh)
+        specs = _grid_specs(fh, fw, rows, cols)
+        self._last_detect_tiling = {
+            "frame_wh": [int(fw), int(fh)],
+            "requested": int(n_req),
+            "effective": int(n_eff),
+            "max_for_frame": int(n_max),
+            "rows": int(rows),
+            "cols": int(cols),
+            "model_input_hw": [int(self._in_h), int(self._in_w)],
+        }
         if not specs:
             return []
 

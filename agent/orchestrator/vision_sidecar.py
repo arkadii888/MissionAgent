@@ -13,7 +13,7 @@ import cv2
 
 from agent.orchestrator.camera_manager import CameraManager
 from agent.orchestrator.inference.detection_manager import DetectionManager
-from agent.orchestrator.inference.yolo_onnx import Detection, scale_detections_xyxy
+from agent.orchestrator.inference.yolo_common import Detection, scale_detections_xyxy
 from agent.orchestrator.vision_overlay import annotate_frame
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ def arducam_vision_enabled() -> bool:
 
 
 def configure_vision_environment() -> None:
-    """When ArduCam vision is on, default to Hailo unless the operator set YOLO_BACKEND."""
+    """When ArduCam vision is on, normalize legacy env (inference is Hailo-only)."""
     if not arducam_vision_enabled():
         return
     if os.environ.get("YOLO_BACKEND", "").strip() == "":
@@ -243,13 +243,12 @@ def start_arducam_vision() -> VisionRuntime:
         cam.stop()
         raise RuntimeError(f"Picamera2 failed: {cam.startup_error}")
 
-    detector = DetectionManager(
-        model_path=os.environ.get("YOLO_ONNX_PATH"),
-        hef_path=os.environ.get("YOLO_HEF_PATH"),
-    )
+    detector = DetectionManager(hef_path=os.environ.get("YOLO_HEF_PATH"))
     if detector.detector is None:
         cam.stop()
-        raise RuntimeError("YOLO detector failed to load (check YOLO_BACKEND / HEF / hailo_platform).")
+        raise RuntimeError(
+            "YOLO Hailo detector failed to load (check YOLO_HEF_PATH, HEF on disk, and hailo_platform)."
+        )
 
     detector.start(cam)
     recorder = _OverlayRecorder(

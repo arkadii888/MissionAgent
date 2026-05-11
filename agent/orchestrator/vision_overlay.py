@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 
-from agent.orchestrator.inference.yolo_onnx import Detection
+from agent.orchestrator.inference.yolo_common import Detection
 
 
 def color_rgb_for_class(class_id: int) -> tuple[int, int, int]:

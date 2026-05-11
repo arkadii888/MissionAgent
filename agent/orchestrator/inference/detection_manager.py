@@ -14,8 +14,8 @@ from typing import Any
 import numpy as np
 
 from .paths import resolve_model_file
-from .yolo_hailo import hailo_platform_available
-from .yolo_onnx import Detection, Yolo26OnnxDetector
+from .yolo_common import Detection
+from .yolo_hailo import YoloHailoDetector
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def _resolve_model_path(path: str | None) -> str | None:
 @dataclass
 class DetectionSnapshot:
     """One recorded inference result for debugging."""
-    at: str 
+    at: str
     count: int
     detections: list[dict[str, Any]]  # class_name, confidence, class_id
 
@@ -44,7 +44,7 @@ class DetectionSnapshot:
 @dataclass
 class PipelineDebugStats:
     running: bool
-    backend: str  # hailo | onnx | none
+    backend: str  # hailo | none
     detector_loaded: bool
     frames_processed: int
     frames_waited_none: int
@@ -59,63 +59,38 @@ class PipelineDebugStats:
     hailo_runtime: dict[str, Any] | None = None
 
 
-def _create_detector(
-    model_path: str | None,
-    hef_path: str | None = None,
-) -> tuple[Any | None, str]:
-    """
-    YOLO_BACKEND=auto|onnx|hailo (default auto).
-    Hailo: YOLO_HEF_PATH (default models/yolo26n_b8.hef). ONNX: YOLO_ONNX_PATH / model_path.
-    """
-    backend_pref = os.environ.get("YOLO_BACKEND", "auto").strip().lower()
+def _warn_legacy_backend() -> None:
+    pref = os.environ.get("YOLO_BACKEND", "").strip().lower()
+    if pref in ("onnx", "auto", "default", ""):
+        return
+    if pref != "hailo":
+        print(
+            f"YOLO_BACKEND={pref!r} is not supported (Hailo only); ignoring.",
+            flush=True,
+        )
+
+
+def _create_detector(hef_path: str | None) -> tuple[Any | None, str]:
+    """Load YoloHailoDetector from YOLO_HEF_PATH / hef_path."""
+    _warn_legacy_backend()
     selected_hef_path = _resolve_model_path(
         hef_path
         or os.environ.get(
-        "YOLO_HEF_PATH", "models/yolo26n_b8.hef"
+            "YOLO_HEF_PATH",
+            "models/yolo26n_b8.hef",
         )
     )
-    model_path = _resolve_model_path(model_path)
-
-    if backend_pref == "onnx":
-        try:
-            return Yolo26OnnxDetector(model_path=model_path), "onnx"
-        except FileNotFoundError as e:
-            print(f"YOLO ONNX disabled (no model): {e}")
-            return None, "none"
-
-    if backend_pref == "hailo":
-        from .yolo_hailo import YoloHailoDetector
-
-        try:
-            return YoloHailoDetector(hef_path=selected_hef_path), "hailo"
-        except Exception as e:
-            print(f"YOLO Hailo failed to initialize: {e}")
-            return None, "none"
-
-    if backend_pref not in ("auto", "", "default"):
-        print(f"Unknown YOLO_BACKEND={backend_pref!r}; using auto.")
-
-    if hailo_platform_available() and os.path.isfile(selected_hef_path):
-        from .yolo_hailo import YoloHailoDetector
-
-        try:
-            return YoloHailoDetector(hef_path=selected_hef_path), "hailo"
-        except Exception as e:
-            print(f"Hailo unavailable ({e}); falling back to ONNX.")
-
     try:
-        return Yolo26OnnxDetector(model_path=model_path), "onnx"
-    except FileNotFoundError as e:
-        print(f"YOLO ONNX disabled (no model): {e}")
+        return YoloHailoDetector(hef_path=selected_hef_path), "hailo"
+    except Exception as e:
+        print(f"YOLO Hailo failed to initialize: {e}")
         return None, "none"
 
 
 class DetectionManager:
     """Background thread: runs YOLO on latest camera frame (drops frames if inference is slower)."""
 
-    def __init__(
-        self, model_path: str | None = None, hef_path: str | None = None
-    ) -> None:
+    def __init__(self, hef_path: str | None = None) -> None:
         self.latest: list[Detection] = []
         self.lock = threading.Lock()
         self.running = False
@@ -156,7 +131,7 @@ class DetectionManager:
             "yes",
         )
 
-        self.detector, self._backend = _create_detector(model_path, hef_path)
+        self.detector, self._backend = _create_detector(hef_path)
 
     def get_debug_stats(self) -> PipelineDebugStats:
         with self.lock:
@@ -249,8 +224,7 @@ class DetectionManager:
         """
         if (
             self._use_main_stream
-            and
-            self._backend == "hailo"
+            and self._backend == "hailo"
             and getattr(cam, "_stream_mode", None) == "dual"
             and hasattr(cam, "capture_for_detection")
         ):
@@ -359,7 +333,6 @@ class DetectionManager:
                     logger.warning("JSONL write failed: %s", e)
 
             self._maybe_console_log()
-            # Yield briefly so API endpoints remain responsive under heavy inference.
             time.sleep(0.001)
 
     def stop(self) -> None:

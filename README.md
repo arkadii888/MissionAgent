@@ -101,18 +101,74 @@ uv run python agent/orchestrator/loops.py
 
 The same string is not processed twice in one run; change the prompt in C++ to request a new mission. Tune `PROMPT_POLL_INTERVAL_S` and `FOLLOW_POLL_INTERVAL_S` (seconds) and `TELEMETRY_POLL_HZ` if needed.
 
-### ArduCam + Hailo YOLO (optional)
+### ArduCam + YOLO vision (optional)
 
-Set **`ARDUCAM_VISION=1`** to run `rpicam-*` smoke test, Picamera2 capture, Hailo inference on **`agent/models/yolo26n_b8.hef`** (override with **`YOLO_HEF_PATH`**), overlay recording under **`ARDUCAM_VIDEO_DIR`** (default `/arducamvideos`, timestamped `arducam_*.mp4`), and the asyncio mission loop unchanged. Startup is fail-fast if the camera or detector cannot start. With vision on, **`YOLO_BACKEND`** defaults to **`hailo`** unless you set it earlier.
+Set **`ARDUCAM_VISION=1`** to start vision alongside the mission loop (see `agent/orchestrator/loops.py`). That path runs, in order:
 
-**Picamera2** is not in `pyproject.toml` (cross-platform lock); on a Pi install it in the venv, e.g. `uv pip install "picamera2>=0.3.31"`, or use the OS package—see comments in **`agent/.env.orchestrator`**.
+1. **`configure_vision_environment()`** — if you have not set **`YOLO_BACKEND`**, it defaults to **`hailo`** for compatibility with older env files (inference is Hailo-only).
+2. **`run_rpicam_health_check()`** — quick `rpicam-*` / `libcamera-*` smoke test so the process fails fast if the camera stack is broken.
+3. **`CameraManager`** (`agent/orchestrator/camera_manager.py`) — Picamera2 preview stream (dual **main + lores** when possible, else single stream). Frames are exposed as **`latest_frame`** under a lock.
+4. **`DetectionManager`** (`agent/orchestrator/inference/detection_manager.py`) — loads the **Hailo** YOLO detector and runs a **background thread** that repeatedly grabs the latest frame, runs **`detector.detect(...)`**, and publishes **`latest`** detections (also under a lock) for the recorder and any other consumer.
+5. **`_OverlayRecorder`** (`agent/orchestrator/vision_sidecar.py`) — another thread that copies the preview frame, scales boxes when inference used full-resolution **main** (see below), draws overlays via **`annotate_frame`** (`agent/orchestrator/vision_overlay.py`), and writes an MP4 with **`cv2.VideoWriter`**.
 
-**Where thresholds are set**
+Startup is **fail-fast** if Picamera2 or the detector cannot initialize. Recordings go under **`ARDUCAM_VIDEO_DIR`** (default `/arducamvideos`) as timestamped **`arducam_*.mp4`**.
+
+**Picamera2** is not in `pyproject.toml` (cross-platform lock); on a Pi install it in the venv, e.g. `uv pip install "picamera2>=0.3.31"`, or use the OS package—see **`agent/.env.orchestrator`**.
+
+#### How the YOLO stack works
+
+Inference code lives under **`agent/orchestrator/inference/`**:
+
+| Module | Role |
+| --- | --- |
+| **`detection_manager.py`** | Loads **`YoloHailoDetector`**, resolves **`YOLO_HEF_PATH`**, starts the inference thread, keeps debug stats / optional JSONL history (`DETECTION_JSONL_PATH`). |
+| **`yolo_common.py`** | **`Detection`** dataclass, letterbox / NMS helpers shared with the Hailo path. |
+| **`yolo_hailo.py`** | **`YoloHailoDetector`**: HailoRT + **HEF**; supports end-to-end and multi-head HEF layouts; optional tiling via env (see table below). Returns **`Detection`** in image pixel space. |
+| **`coco_names.py`** | Static COCO-80 names for class ids. |
+| **`paths.py`** | Resolves relative paths like **`models/yolo26n_b8.hef`** by walking up from this package until the file exists (works with different clone layouts). |
+
+Inference is **Hailo-only** (no ONNX runtime in this app). Put the **HEF** under **`agent/models/`** or set absolute **`YOLO_HEF_PATH`** (default relative **`models/yolo26n_b8.hef`**). Legacy **`YOLO_BACKEND`** values other than **`hailo`** are ignored with a console notice.
+
+**Threading contract:** the camera thread only updates **`latest_frame`**. The detection thread **drops frames** if inference is slower than capture (it always processes the most recently acquired buffer for the chosen stream). The recorder thread reads **`latest`** and the same preview frame for drawing; it does not run the network.
+
+**RGB vs BGR:** Picamera **`capture_array`** channel order does **not** always match the stream name. The code uses **`CameraManager.buffer_is_bgr()`** (see `camera_manager.py`): **`RGB888`** streams are treated as **OpenCV BGR** in memory; **`BGR888`** as **RGB** in memory, matching Picamera2’s internal buffer/PIL mapping. **`DetectionManager`** converts **BGR → RGB** before **`detect()`** when needed. For recording, frames are passed to **`VideoWriter`** in **BGR** order. If colors are wrong on your build, set **`ARDUCAM_PIXEL_LAYOUT=bgr`** or **`rgb`** to override.
+
+**Full-resolution inference (optional):** set **`DETECTION_USE_MAIN_STREAM=1`** (and use a **dual** stream) so Hailo can run on **`capture_array("main")`** while the preview/recorder stays on **lores**. **`overlay_scale_for_preview()`** then supplies scale factors so **`vision_sidecar`** can map boxes onto the smaller overlay frame.
+
+#### Environment variables (YOLO + vision)
+
+**Orchestration / Hailo core**
+
+| Variable | Purpose |
+| --- | --- |
+| **`YOLO_BACKEND`** | Optional; **`hailo`** is the only runtime. Other values are ignored (legacy). |
+| **`YOLO_HEF_PATH`** | Hailo **HEF** file; default relative **`models/yolo26n_b8.hef`**. |
+| **`DETECTION_USE_MAIN_STREAM`** | `1` / `true` — Hailo uses **main** full-res on dual stream; overlay scales to lores. |
+| **`DETECTION_DEBUG_LOG`** | Per-second pipeline log lines. |
+| **`DETECTION_DEBUG_STATS`** | Frame mean/std in the debug stats path. |
+| **`DETECTION_JSONL_PATH`** | Append per-frame detection JSON lines. |
+
+**Hailo-only (see docstring in `yolo_hailo.py` for detail)**
+
+| Variable | Purpose |
+| --- | --- |
+| **`YOLO_HAILO_FRAME_MODE`** | Legacy label for **`get_runtime_info()`** / scheduling text; **tiling uses `YOLO_NUMBER_TILES` only**. |
+| **`YOLO_NUMBER_TILES`** | Split each frame into an **N = rows×cols** grid (`N` from this int, default **1** = whole image). Layout picks `(rows, cols)` to match frame aspect. **`N` is clamped** per frame to at most **`ceil(W/model_w)×ceil(H/model_h)`** (model input size from the HEF, typically 640). Each tile is letterboxed to the model, then boxes are stitched with offsets + global NMS. |
+| **`PERSON_NMS_IOU`**, **`YOLO_MAX_CANDIDATES`**, **`YOLO_MAX_DETECTIONS`**, **`YOLO_PERSON_ONLY`**, **`YOLO_THREE_HEAD_BOX_SCALE`** | Post-process / filtering knobs. |
+
+**Camera / color (when `ARDUCAM_VISION=1`)**
+
+| Variable | Purpose |
+| --- | --- |
+| **`ARDUCAM_PIXEL_LAYOUT`** | `bgr` or `rgb` — force buffer interpretation if autodetection is wrong. |
+| **`ARDUCAM_FORCE_RGB888`** / **`ARDUCAM_FORCE_BGR888`** | Prefer one Picamera pixel format first when negotiating the stream. |
+
+#### Thresholds for logging vs model scores
 
 | What | Where | Default |
 | --- | --- | --- |
-| **Person** `log.info` only after this confidence, for **N** consecutive recorder frames | **`ARDUCAM_PERSON_CONF`**, **`ARDUCAM_PERSON_FRAMES`** in `agent/.env.orchestrator` (or the shell) | `0.5`, `3` |
-| **Per-model** score before a box is kept (all classes) | `YoloHailoDetector` / `Yolo26OnnxDetector` **`conf_threshold`** in code (`0.25`); not env-wired today | `0.25` |
+| **Person** `log.info` after this confidence on **N** consecutive recorder frames | **`ARDUCAM_PERSON_CONF`**, **`ARDUCAM_PERSON_FRAMES`** | `0.5`, `3` |
+| **Minimum class score** for a kept box (all classes) | **`conf_threshold`** in **`YoloHailoDetector`** (`0.25`); not env-wired | `0.25` |
 | Verbose detection pipeline prints / logs | **`DETECTION_DEBUG_LOG=1`** | off |
 
 ## Mission DSL pipeline (Gemma 4 E2B)
