@@ -16,6 +16,8 @@ from agent.orchestrator.llm.prompts import build_system_prompt, build_user_promp
 from agent.orchestrator.logging import JsonPipelineLogger, log_mission_multipoint_geojson
 from agent.orchestrator.mission_intents import expand_intents_to_mission
 from agent.orchestrator.mission_intents.proto import mission_list_to_ordered_dict
+from agent.orchestrator.rescue.dispatcher import RescueMissionDispatcher
+from agent.orchestrator.rescue.home_state import HomeLocationState
 from agent.orchestrator.state import MissionState, TelemetryCache
 from agent.orchestrator.vision_sidecar import (
     arducam_vision_enabled,
@@ -78,6 +80,8 @@ async def _plan_from_prompt(
     telemetry_map: dict[str, Any],
     json_logger: JsonPipelineLogger,
     trace_id: str,
+    home_state: HomeLocationState,
+    rescue_dispatcher: RescueMissionDispatcher | None = None,
 ) -> tuple[str, Any, str] | None:
     """Run LLM then expand JSON intents to protobuf mission items.
 
@@ -86,6 +90,7 @@ async def _plan_from_prompt(
 
     Side effects:
         Updates ``mission`` phase on error; logs pipeline events to ``json_logger``.
+        Calls ``home_state.set_once`` when the first ``takeoff`` intent is processed.
     """
     status_line = await mission.prompt_mission_status()
     await mission.begin_planning()
@@ -135,6 +140,13 @@ async def _plan_from_prompt(
                 trace_id,
                 {"intent_type": intent_type, "intent": dict(intent_payload)},
             )
+            # Capture first-takeoff lat/lon as home for rescue RTL.
+            if intent_type == "takeoff":
+                home_state.set_once(
+                    latitude_deg=float(telemetry_map.get("latitude_deg", 0.0)),
+                    longitude_deg=float(telemetry_map.get("longitude_deg", 0.0)),
+                    relative_altitude_m=float(telemetry_map.get("relative_altitude_m", 0.0)),
+                )
 
         proto = expand_intents_to_mission(
             plan_dict,
@@ -218,6 +230,7 @@ async def run_mission_test_loop() -> None:
         path=Path(settings.mission_json_log_path),
         enabled=settings.mission_json_log_enabled,
     )
+    home_state = HomeLocationState()
     local_test_mode = _env_flag("LOCAL_TEST_MODE")
     last_seen_prompt: list[str | None] = [None]
 
@@ -277,6 +290,8 @@ async def run_mission_test_loop() -> None:
                     telemetry_map=telemetry_map,
                     json_logger=json_logger,
                     trace_id=trace_id,
+                    home_state=home_state,
+                    rescue_dispatcher=None,  # no gRPC in local-test mode
                 )
                 if planned is None:
                     continue
@@ -303,6 +318,31 @@ async def run_mission_test_loop() -> None:
                 )
 
         async with InternalGrpcClient(settings) as client:
+            loop = asyncio.get_running_loop()
+
+            # Build rescue dispatcher now that we have a live gRPC client + event loop.
+            rescue_dispatcher = RescueMissionDispatcher(
+                loop=loop,
+                client=client,
+                llm=llm,
+                cache=cache,
+                home_state=home_state,
+                json_logger=json_logger,
+                min_rth_alt_m=settings.rescue_min_rth_alt_m,
+                camera_mount_pitch_deg=settings.camera_mount_pitch_deg,
+                camera_hfov_deg=settings.camera_hfov_deg,
+                camera_vfov_deg=settings.camera_vfov_deg,
+            )
+            # Arm the vision sidecar with the dispatcher so it can trigger rescue.
+            if vision_rt is not None:
+                vision_rt.recorder.set_rescue_dispatcher(
+                    dispatcher=rescue_dispatcher,
+                    rescue_person_conf=settings.rescue_person_conf,
+                    rescue_person_frames=settings.rescue_person_frames,
+                    rescue_arm_delay_s=settings.rescue_arm_delay_s,
+                    rescue_photos_dir=Path(settings.rescue_photos_dir),
+                )
+
             telemetry_task = asyncio.create_task(
                 _telemetry_poll_loop(client, cache, period_telemetry, stop),
                 name="telemetry_poll",
@@ -348,6 +388,8 @@ async def run_mission_test_loop() -> None:
                         telemetry_map=tel_map,
                         json_logger=json_logger,
                         trace_id=trace_id,
+                        home_state=home_state,
+                        rescue_dispatcher=rescue_dispatcher,
                     )
                     if planned is None:
                         await asyncio.sleep(prompt_interval)
@@ -375,6 +417,13 @@ async def run_mission_test_loop() -> None:
                         await mission.mark_error(f"grpc: {exc}")
                         await asyncio.sleep(prompt_interval)
                         continue
+
+                    # Notify the rescue trigger that the first operator mission is airborne.
+                    # This starts the arm-delay countdown; the trigger will only become
+                    # active after RESCUE_ARM_DELAY_S seconds, giving the drone time to
+                    # fly away from the operator before person detection is enabled.
+                    if vision_rt is not None:
+                        vision_rt.notify_mission_sent()
 
                     await mission.set_mission(name, proto)
                     log.info("Uploaded mission %r (%d items).", name, len(proto.items))

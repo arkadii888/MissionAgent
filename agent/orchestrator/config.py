@@ -1,4 +1,4 @@
-"""Environment-backed configuration for the orchestrator (LLM, gRPC, logging)."""
+"""Environment-backed configuration for the orchestrator (LLM, gRPC, logging, rescue)."""
 
 import os
 from dataclasses import dataclass
@@ -20,6 +20,15 @@ class Settings:
         max_waypoints: Caps intents in prompts and schema (see also ``MAX_WAYPOINTS`` env).
         mission_json_log_enabled: Append JSON pipeline events when true. Env: ``MISSION_JSON_LOG_ENABLED``.
         mission_json_log_path: JSONL destination path. Env: ``MISSION_JSON_LOG_PATH``.
+        rescue_person_conf: Min YOLO person confidence to count a qualifying frame. Env: ``RESCUE_PERSON_CONF``.
+        rescue_person_frames: Consecutive qualifying frames before trigger fires. Env: ``RESCUE_PERSON_FRAMES``.
+        rescue_arm_delay_s: Seconds after the first operator mission is sent before the rescue trigger
+            becomes active. Prevents detecting the operator at takeoff. Env: ``RESCUE_ARM_DELAY_S``.
+        rescue_photos_dir: Directory for annotated frame + crop JPEG saves. Env: ``RESCUE_PHOTOS_DIR``.
+        rescue_min_rth_alt_m: Minimum cruise altitude for the return-home leg. Env: ``RESCUE_MIN_RTH_ALT_M``.
+        camera_mount_pitch_deg: Camera mount angle down from horizontal (90=nadir). Env: ``CAMERA_MOUNT_PITCH_DEG``.
+        camera_hfov_deg: Camera horizontal field of view in degrees. Env: ``CAMERA_HFOV_DEG``.
+        camera_vfov_deg: Camera vertical field of view in degrees. Env: ``CAMERA_VFOV_DEG``.
     """
 
     llama_cpp_url: str | None
@@ -33,6 +42,18 @@ class Settings:
     max_waypoints: int
     mission_json_log_enabled: bool
     mission_json_log_path: str
+
+    # --- Person rescue trigger ---
+    rescue_person_conf: float
+    rescue_person_frames: int
+    rescue_arm_delay_s: float
+    rescue_photos_dir: str
+    rescue_min_rth_alt_m: float
+
+    # --- Camera geometry for person-offset estimation ---
+    camera_mount_pitch_deg: float
+    camera_hfov_deg: float
+    camera_vfov_deg: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -50,4 +71,12 @@ class Settings:
             mission_json_log_enabled=os.getenv("MISSION_JSON_LOG_ENABLED", "1").strip().lower()
             in {"1", "true", "yes", "on"},
             mission_json_log_path=os.getenv("MISSION_JSON_LOG_PATH", "agent/logs/mission_pipeline.jsonl"),
+            rescue_person_conf=float(os.getenv("RESCUE_PERSON_CONF", "0.75")),
+            rescue_person_frames=int(os.getenv("RESCUE_PERSON_FRAMES", "5")),
+            rescue_arm_delay_s=float(os.getenv("RESCUE_ARM_DELAY_S", "60.0")),
+            rescue_photos_dir=os.getenv("RESCUE_PHOTOS_DIR", "agent/arducamphotos"),
+            rescue_min_rth_alt_m=float(os.getenv("RESCUE_MIN_RTH_ALT_M", "10.0")),
+            camera_mount_pitch_deg=float(os.getenv("CAMERA_MOUNT_PITCH_DEG", "90.0")),
+            camera_hfov_deg=float(os.getenv("CAMERA_HFOV_DEG", "66.0")),
+            camera_vfov_deg=float(os.getenv("CAMERA_VFOV_DEG", "41.0")),
         )

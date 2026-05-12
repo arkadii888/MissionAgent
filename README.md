@@ -168,6 +168,7 @@ Inference is **Hailo-only** (no ONNX runtime in this app). Put the **HEF** under
 | What | Where | Default |
 | --- | --- | --- |
 | **Person** `log.info` after this confidence on **N** consecutive recorder frames | **`ARDUCAM_PERSON_CONF`**, **`ARDUCAM_PERSON_FRAMES`** | `0.5`, `3` |
+| **Person rescue trigger** fires after this confidence on **N** consecutive frames (see [Person rescue trigger](#person-rescue-trigger)) | **`RESCUE_PERSON_CONF`**, **`RESCUE_PERSON_FRAMES`** | `0.75`, `5` |
 | **Minimum class score** for a kept box (all classes) | **`conf_threshold`** in **`YoloHailoDetector`** (`0.25`); not env-wired | `0.25` |
 | Verbose detection pipeline prints / logs | **`DETECTION_DEBUG_LOG=1`** | off |
 
@@ -301,3 +302,113 @@ To add a new intent:
 4. Add tests in `agent/tests/test_mission_intents.py`.
 
 `agent/orchestrator/llm/schemas.py` pulls the JSON schema from the same specs; edit it only if you need non-intent tweaks (aliases, etc.).
+
+## Person rescue trigger
+
+When `ARDUCAM_VISION=1` and a gRPC target is configured, the vision pipeline watches every
+YOLO frame for a person and, once detection criteria are met while the drone is airborne and
+clear of the operator, automatically sends a return-home-and-land mission.
+
+### Trigger state machine
+
+The trigger has three states that transition in one direction only:
+
+```
+SUPPRESSED  ──►  ACTIVE  ──►  DISABLED
+```
+
+**SUPPRESSED** (initial state, from process start)
+
+Person detections are completely ignored. The trigger will not leave this state until two
+conditions are both true:
+
+1. The first operator mission has been confirmed uploaded via `StartMission` gRPC.
+2. `RESCUE_ARM_DELAY_S` (default 60 s) have elapsed since that upload.
+
+This window exists so the operator standing beside the drone at takeoff is never detected as a
+rescue target. The drone flies away during this time and only then does person detection begin.
+
+**ACTIVE** (after the arm delay expires)
+
+YOLO detections are evaluated on every recorder frame (~15 fps). A frame qualifies when the
+highest-confidence `person` detection reaches at least `RESCUE_PERSON_CONF` (default 0.75).
+The trigger fires when `RESCUE_PERSON_FRAMES` (default 5) qualifying frames occur
+consecutively without a miss. A miss (no person above the threshold in a frame) resets the
+consecutive counter to zero so a brief false positive cannot accumulate across separate sightings.
+
+**DISABLED** (permanent, after the trigger fires once)
+
+Once the trigger fires it is permanently disabled for the rest of the flight. No second rescue
+mission will ever be dispatched regardless of further detections. This is intentional: the drone
+is already flying home, and only one rescue target is expected per search mission.
+
+### What happens when the trigger fires
+
+All steps happen near-simultaneously; the vision thread is not blocked by any of them.
+
+1. **Snapshots saved** to `RESCUE_PHOTOS_DIR` (default `agent/arducamphotos/`):
+   - `YYYYmmdd_HHMMSS_full.jpg` — full annotated frame with all bounding boxes drawn.
+   - `YYYYmmdd_HHMMSS_person.jpg` — region tightly cropped to the detected person (10 px margin).
+
+2. **Rescue mission uploaded** via gRPC (`StartMission`). The mission is deterministic and
+   contains exactly two intents:
+   - `goto_lat_lon` to the stored first-takeoff coordinates at the drone's current altitude
+     (clamped to at least `RESCUE_MIN_RTH_ALT_M`, default 10 m).
+   - `land` at the home point.
+
+3. **Gemma analysis** starts as a parallel asyncio task while the drone is already flying home.
+   The cropped image is sent to the multimodal `llama-server` endpoint (requires `--mmproj`).
+   Gemma is given the estimated drone-relative position of the person and asked to assess:
+   - Terrain and person posture (standing / sitting / lying / unknown).
+   - Health concern level (low / medium / high) with brief reasoning.
+   - A short numbered action plan for rescuers.
+   The full response is written to the orchestrator log (`log.info`) and recorded in the JSON
+   pipeline log under event `rescue_analysis_completed`. Nothing else is done with it yet.
+
+### Home location
+
+The first time a `takeoff` intent is processed by the mission loop, the drone's current
+telemetry lat/lon is recorded as "home". The rescue `goto_lat_lon` flies back to that exact
+point. Override at startup with `RESCUE_HOME_LATITUDE_DEG` + `RESCUE_HOME_LONGITUDE_DEG` env
+vars (useful for bench testing without a real takeoff).
+
+### Person-position estimate
+
+The offset passed to Gemma is a flat-terrain pinhole-camera projection:
+
+- **`forward_m`** — metres in front of the drone along its heading axis.
+- **`right_m`** — metres to the right of the drone.
+
+Inputs are the bounding-box centre, `CAMERA_MOUNT_PITCH_DEG` (default 90 = nadir), and the
+drone's current relative altitude. No world-frame lat/lon is computed yet (drone heading is not
+available in telemetry); a TODO in `agent/orchestrator/rescue/geo.py` documents the upgrade path.
+
+### Env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `RESCUE_PERSON_CONF` | `0.75` | Min YOLO person confidence score (0–1) per frame |
+| `RESCUE_PERSON_FRAMES` | `5` | Consecutive qualifying frames required before firing |
+| `RESCUE_ARM_DELAY_S` | `60.0` | Seconds after first mission sent before trigger becomes active |
+| `RESCUE_PHOTOS_DIR` | `agent/arducamphotos` | Directory for annotated frame + crop JPEGs |
+| `RESCUE_MIN_RTH_ALT_M` | `10.0` | Safety floor for return-home cruise altitude (metres AGL) |
+| `RESCUE_HOME_LATITUDE_DEG` | _(unset)_ | Hard-code home lat (both lat + lon must be set) |
+| `RESCUE_HOME_LONGITUDE_DEG` | _(unset)_ | Hard-code home lon |
+| `RESCUE_HOME_RELATIVE_ALTITUDE_M` | `0.0` | Hard-code home altitude above ground (metres) |
+| `CAMERA_MOUNT_PITCH_DEG` | `90.0` | Camera tilt from horizontal in degrees (90 = nadir / straight down) |
+| `CAMERA_HFOV_DEG` | `66.0` | Camera horizontal field of view in degrees |
+| `CAMERA_VFOV_DEG` | `41.0` | Camera vertical field of view in degrees |
+
+### JSON pipeline log events
+
+Additional events written to `MISSION_JSON_LOG_PATH` during a rescue:
+
+| Event | Contents |
+|---|---|
+| `rescue_plan_built` | Deterministic `goto_lat_lon` + `land` intent dict |
+| `rescue_mission_converted` | Expanded protobuf as ordered dict |
+| `rescue_mission_uploaded` | Confirms `StartMission` gRPC succeeded |
+| `rescue_person_offset_estimated` | `forward_m`, `right_m`, `relative_altitude_m` |
+| `rescue_analysis_completed` | Full Gemma response text + offset context |
+| `rescue_mission_failed` | Error details if intent expansion or gRPC call fails |
+| `rescue_analysis_failed` | Error details if the Gemma call fails |

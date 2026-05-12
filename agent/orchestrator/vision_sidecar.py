@@ -1,5 +1,7 @@
 """ArduCam vision: rpicam smoke test, overlay recording to disk, person streak logging."""
 
+from __future__ import annotations
+
 import logging
 import os
 import shutil
@@ -9,12 +11,20 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 import cv2
+import numpy as np
 
 from agent.orchestrator.camera_manager import CameraManager
 from agent.orchestrator.inference.detection_manager import DetectionManager
 from agent.orchestrator.inference.yolo_common import Detection, scale_detections_xyxy
+from agent.orchestrator.rescue.snapshots import save_rescue_snapshots
+from agent.orchestrator.rescue.trigger import PersonRescueTrigger
 from agent.orchestrator.vision_overlay import annotate_frame
+
+if TYPE_CHECKING:
+    from agent.orchestrator.rescue.dispatcher import RescueMissionDispatcher
 
 log = logging.getLogger(__name__)
 
@@ -88,15 +98,32 @@ def run_rpicam_health_check(*, timeout_s: float = 60.0) -> None:
 
 
 class _PersonPresenceLogger:
-    """Log once when person confidence meets threshold for N consecutive recorder frames."""
+    """Logs a single INFO message when a person is seen for N consecutive recorder frames.
+
+    Re-arms itself once the streak breaks (i.e. a miss resets state), so it will
+    log again on the next qualifying run. This is separate from ``PersonRescueTrigger``
+    which manages the cooldown and mission dispatch; this class is purely for console
+    visibility during live flights.
+    """
 
     def __init__(self, min_confidence: float, consecutive_frames: int) -> None:
+        """Initialise the logger.
+
+        Args:
+            min_confidence: Minimum person confidence score (0–1) to count a frame.
+            consecutive_frames: Required uninterrupted qualifying frames before logging.
+        """
         self._min_confidence = min_confidence
         self._consecutive_frames = max(1, consecutive_frames)
         self._streak = 0
         self._armed = True
 
     def tick(self, dets: list[Detection]) -> None:
+        """Advance state for one recorder frame; emit a log line on first qualifying run.
+
+        Args:
+            dets: Detections from the current frame.
+        """
         best = 0.0
         for d in dets:
             if d.class_id != 0 and d.class_name != "person":
@@ -142,6 +169,64 @@ class _OverlayRecorder:
         self._thread: threading.Thread | None = None
         self._out_path: Path | None = None
 
+        # Rescue trigger — armed lazily via set_rescue_dispatcher().
+        self._rescue_trigger: PersonRescueTrigger | None = None
+        self._rescue_dispatcher: RescueMissionDispatcher | None = None
+        self._rescue_photos_dir: Path | None = None
+        self._rescue_lock = threading.Lock()
+
+    def set_rescue_dispatcher(
+        self,
+        *,
+        dispatcher: RescueMissionDispatcher,
+        rescue_person_conf: float,
+        rescue_person_frames: int,
+        rescue_arm_delay_s: float,
+        rescue_photos_dir: Path,
+    ) -> None:
+        """Arm the rescue trigger.  Safe to call from any thread after start().
+
+        The trigger starts in SUPPRESSED state.  Call ``notify_mission_sent()`` once
+        the first operator mission is confirmed uploaded to transition to the arming
+        countdown.
+
+        Args:
+            dispatcher: Live rescue dispatcher connected to the asyncio event loop.
+            rescue_person_conf: Minimum YOLO person confidence to count a frame.
+            rescue_person_frames: Consecutive qualifying frames before the trigger fires.
+            rescue_arm_delay_s: Seconds after the first mission is sent before the
+                trigger becomes active (gives the drone time to fly away from the operator).
+            rescue_photos_dir: Directory where annotated frame and person crop are saved.
+        """
+        trigger = PersonRescueTrigger(
+            min_confidence=rescue_person_conf,
+            consecutive_frames=rescue_person_frames,
+            arm_delay_s=rescue_arm_delay_s,
+        )
+        with self._rescue_lock:
+            self._rescue_trigger = trigger
+            self._rescue_dispatcher = dispatcher
+            self._rescue_photos_dir = rescue_photos_dir
+        log.info(
+            "Rescue trigger armed (conf=%.2f frames=%d arm_delay=%.0fs photos_dir=%s)",
+            rescue_person_conf,
+            rescue_person_frames,
+            rescue_arm_delay_s,
+            rescue_photos_dir,
+        )
+
+    def notify_mission_sent(self) -> None:
+        """Notify the rescue trigger that the first operator mission has been sent.
+
+        Starts the arm-delay countdown inside ``PersonRescueTrigger``.  Safe to call
+        from any thread; no-op if the rescue trigger has not been armed yet or if
+        called more than once.
+        """
+        with self._rescue_lock:
+            trigger = self._rescue_trigger
+        if trigger is not None:
+            trigger.notify_mission_sent()
+
     def output_path(self) -> Path | None:
         return self._out_path
 
@@ -180,6 +265,8 @@ class _OverlayRecorder:
                 dets = scale_detections_xyxy(dets, sx, sy)
 
             self._person.tick(dets)
+            self._tick_rescue(frame, dets)
+
             annotate_frame(frame, dets, image_is_bgr=self._cam.buffer_is_bgr())
             if self._cam.buffer_is_bgr():
                 to_write = frame
@@ -207,6 +294,56 @@ class _OverlayRecorder:
         if writer is not None:
             writer.release()
 
+    def _tick_rescue(self, frame: np.ndarray, dets: list[Detection]) -> None:
+        """Evaluate rescue trigger and dispatch a rescue if it fires.
+
+        Called on every recorder frame from ``_loop``. Reads trigger/dispatcher refs
+        under a lock so ``set_rescue_dispatcher`` can be called from another thread.
+
+        Args:
+            frame: Current video frame as a NumPy array (RGB or BGR depending on
+                ``CameraManager.buffer_is_bgr``).
+            dets: Scaled detections for this frame.
+        """
+        with self._rescue_lock:
+            trigger = self._rescue_trigger
+            dispatcher = self._rescue_dispatcher
+            photos_dir = self._rescue_photos_dir
+
+        if trigger is None or dispatcher is None or photos_dir is None:
+            return
+
+        fire = trigger.tick(dets)
+        if fire is None:
+            return
+
+        # Convert to BGR for saving if needed.
+        is_bgr = self._cam.buffer_is_bgr()
+        frame_bgr = frame if is_bgr else cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        h, w = frame_bgr.shape[:2]
+
+        log.info(
+            "Rescue trigger fired: conf=%.2f bbox=%s",
+            fire.best_detection.confidence,
+            fire.best_detection.xyxy,
+        )
+
+        try:
+            full_path, crop_path = save_rescue_snapshots(
+                frame_bgr, dets, out_dir=photos_dir
+            )
+        except Exception:
+            log.exception("save_rescue_snapshots failed")
+            return
+
+        log.info("Rescue snapshots saved: full=%s crop=%s", full_path, crop_path)
+
+        dispatcher.request_rescue(
+            bbox_xyxy=fire.best_detection.xyxy,
+            image_wh=(w, h),
+            crop_path=crop_path,
+        )
+
     def stop(self) -> None:
         self._running = False
         if self._thread is not None:
@@ -216,9 +353,25 @@ class _OverlayRecorder:
 
 @dataclass
 class VisionRuntime:
+    """Container for the three vision pipeline components.
+
+    Attributes:
+        camera: Live Picamera2 frame source.
+        detector: Background Hailo YOLO inference thread.
+        recorder: Overlay annotation and MP4 recording thread.
+    """
+
     camera: CameraManager
     detector: DetectionManager
     recorder: _OverlayRecorder
+
+    def notify_mission_sent(self) -> None:
+        """Propagate first-mission notification to the rescue trigger.
+
+        Call once immediately after the first operator mission is confirmed sent via
+        gRPC so the rescue trigger starts its arm-delay countdown.
+        """
+        self.recorder.notify_mission_sent()
 
     def stop(self) -> None:
         self.recorder.stop()
