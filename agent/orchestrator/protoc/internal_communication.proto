@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+service InternalService {
+  rpc GetTelemetry(Empty) returns (TelemetryResponse);
+  rpc StartMission(MissionItemList) returns (Empty);
+  rpc GetPrompt(Empty) returns (PromptResponse);
+}
+
+message Empty {}
+
+message TelemetryResponse {
+  double latitude_deg = 1;
+  double longitude_deg = 2;
+  float absolute_altitude_m = 3;
+  float relative_altitude_m = 4;
+  float yaw_deg = 5;
+}
+
+message MissionItem {
+  double latitude_deg = 1;
+  double longitude_deg = 2;
+  float relative_altitude_m = 3;
+  float speed_m_s = 4;
+  bool is_fly_through = 5;
+  float gimbal_pitch_deg = 6;
+  float gimbal_yaw_deg = 7;
+  int32 camera_action = 8;
+  float loiter_time_s = 9;
+  double camera_photo_interval_s = 10;
+  float acceptance_radius_m = 11;
+  float yaw_deg = 12;
+  float camera_photo_distance_m = 13;
+  int32 vehicle_action = 14;
+}
+
+message MissionItemList {
+  repeated MissionItem items = 1;
+}
+
+message PromptResponse {
+  string prompt = 1;
+}

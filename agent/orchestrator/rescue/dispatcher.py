@@ -11,6 +11,8 @@ image (when ``image_llm_enabled`` is true) and log a situation estimate and acti
 
 import asyncio
 import logging
+import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +25,47 @@ from agent.orchestrator.llm.prompts import (
 from agent.orchestrator.logging import JsonPipelineLogger, log_mission_multipoint_geojson
 from agent.orchestrator.mission_intents import expand_intents_to_mission
 from agent.orchestrator.mission_intents.proto import mission_list_to_ordered_dict
-from agent.orchestrator.rescue.geo import estimate_person_offset
+from agent.orchestrator.rescue.geo import (
+    PersonGeoEstimate,
+    PersonOffset,
+    estimate_person_lat_lon,
+    estimate_person_offset,
+)
 from agent.orchestrator.rescue.home_state import HomeLocationState
 from agent.orchestrator.state import TelemetryCache
 
 log = logging.getLogger(__name__)
+
+
+def _telemetry_float(tel_map: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(tel_map.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _rename_rescue_snapshots(
+    *,
+    full_path: Path,
+    crop_path: Path | None,
+    geo: PersonGeoEstimate,
+    decimals: int = 6,
+) -> tuple[Path, Path | None]:
+    """Rename JPEGs to ``{lat}?{lon}_full.jpg`` / ``_person.jpg``; on collision append a suffix."""
+    stem = f"{geo.latitude_deg:.{decimals}f}?{geo.longitude_deg:.{decimals}f}"
+
+    def _unique(dest: Path) -> Path:
+        if not dest.exists():
+            return dest
+        return dest.parent / f"{stem}_{int(time.time() * 1000)}{dest.suffix}"
+
+    new_full = _unique(full_path.parent / f"{stem}_full.jpg")
+    full_path.rename(new_full)
+    new_crop: Path | None = None
+    if crop_path is not None and crop_path.is_file():
+        new_crop = _unique(crop_path.parent / f"{stem}_person.jpg")
+        crop_path.rename(new_crop)
+    return new_full, new_crop
 
 
 class RescueMissionDispatcher:
@@ -89,6 +127,7 @@ class RescueMissionDispatcher:
         *,
         bbox_xyxy: tuple[float, float, float, float],
         image_wh: tuple[int, int],
+        full_path: Path,
         crop_path: Path | None,
     ) -> None:
         """Submit a rescue coroutine from any thread.
@@ -100,12 +139,14 @@ class RescueMissionDispatcher:
             bbox_xyxy: Bounding box of the detected person in preview-frame pixel
                 coordinates (x1, y1, x2, y2). Used for the body-frame offset estimate.
             image_wh: Width and height of the preview frame in pixels.
+            full_path: Path to the annotated full-frame JPEG (may be renamed after geo estimate).
             crop_path: Path to the saved person-crop JPEG for multimodal analysis, or
                 ``None`` when only a full-frame snapshot was saved.
         """
         coro = self._run_rescue(
             bbox_xyxy=bbox_xyxy,
             image_wh=image_wh,
+            full_path=full_path,
             crop_path=crop_path,
         )
         asyncio.run_coroutine_threadsafe(coro, self._loop)
@@ -115,6 +156,7 @@ class RescueMissionDispatcher:
         *,
         bbox_xyxy: tuple[float, float, float, float],
         image_wh: tuple[int, int],
+        full_path: Path,
         crop_path: Path | None,
     ) -> None:
         """Upload return-home mission then start the Gemma analysis task.
@@ -122,6 +164,7 @@ class RescueMissionDispatcher:
         Args:
             bbox_xyxy: Person bounding box in preview pixels (x1, y1, x2, y2).
             image_wh: Preview frame dimensions (width, height) in pixels.
+            full_path: Annotated full-frame JPEG path (renamed to estimated lat?lon when valid).
             crop_path: Path to the person-crop JPEG for the Gemma multimodal call, or
                 ``None`` if no crop was saved.
         """
@@ -131,12 +174,92 @@ class RescueMissionDispatcher:
             return
 
         tel_map: dict[str, Any] = await self._cache.as_any()
+        trace_id = self._json_logger.new_trace_id()
+
         # relative_altitude_m is AGL as reported by the flight controller.
         # Clamped to min_rth_alt_m so the drone never descends to fly home.
-        rel_alt = float(tel_map.get("relative_altitude_m", 0.0))
-        rth_alt = max(rel_alt, self._min_rth_alt_m)
+        rel_alt = _telemetry_float(tel_map, "relative_altitude_m")
+        if math.isnan(rel_alt):
+            rth_alt = self._min_rth_alt_m
+        else:
+            rth_alt = max(rel_alt, self._min_rth_alt_m)
 
-        trace_id = self._json_logger.new_trace_id()
+        lat_deg = _telemetry_float(tel_map, "latitude_deg")
+        lon_deg = _telemetry_float(tel_map, "longitude_deg")
+        yaw_deg = _telemetry_float(tel_map, "yaw_deg")
+
+        offset: PersonOffset
+        geo: PersonGeoEstimate | None
+        rel_alt_geom = rel_alt if not math.isnan(rel_alt) else 0.0
+
+        if not any(math.isnan(x) for x in (lat_deg, lon_deg, yaw_deg, rel_alt)):
+            offset, geo_est = estimate_person_lat_lon(
+                bbox_xyxy,
+                image_wh,
+                drone_latitude_deg=lat_deg,
+                drone_longitude_deg=lon_deg,
+                drone_altitude_m=rel_alt,
+                yaw_deg=yaw_deg,
+                camera_pitch_deg=self._camera_mount_pitch_deg,
+                hfov_deg=self._camera_hfov_deg,
+                vfov_deg=self._camera_vfov_deg,
+            )
+            geo = geo_est
+            self._json_logger.log(
+                "rescue_person_geo_estimated",
+                trace_id,
+                {
+                    "person_latitude_deg": geo.latitude_deg,
+                    "person_longitude_deg": geo.longitude_deg,
+                    "north_offset_m": geo.north_offset_m,
+                    "east_offset_m": geo.east_offset_m,
+                    "forward_m": offset.forward_m,
+                    "right_m": offset.right_m,
+                    "drone_latitude_deg": lat_deg,
+                    "drone_longitude_deg": lon_deg,
+                    "yaw_deg": yaw_deg,
+                    "relative_altitude_m": rel_alt,
+                },
+            )
+            log.info(
+                "Rescue person geo estimate: person=(%.6f, %.6f) drone=(%.6f, %.6f) "
+                "yaw_deg=%.1f AGL=%.1fm N=%.2fm E=%.2fm forward=%.2fm right=%.2fm",
+                geo.latitude_deg,
+                geo.longitude_deg,
+                lat_deg,
+                lon_deg,
+                yaw_deg,
+                rel_alt,
+                geo.north_offset_m,
+                geo.east_offset_m,
+                offset.forward_m,
+                offset.right_m,
+            )
+            try:
+                full_path, crop_path = _rename_rescue_snapshots(
+                    full_path=full_path, crop_path=crop_path, geo=geo
+                )
+                log.info(
+                    "Rescue snapshots renamed to lat?lon stem: full=%s crop=%s",
+                    full_path,
+                    crop_path if crop_path is not None else "(none)",
+                )
+            except OSError as exc:
+                log.warning("Could not rename rescue snapshots to geo stem: %s", exc)
+        else:
+            geo = None
+            offset = estimate_person_offset(
+                bbox_xyxy=bbox_xyxy,
+                image_wh=image_wh,
+                drone_altitude_m=max(rel_alt_geom, 0.0),
+                camera_pitch_deg=self._camera_mount_pitch_deg,
+                hfov_deg=self._camera_hfov_deg,
+                vfov_deg=self._camera_vfov_deg,
+            )
+            log.warning(
+                "Rescue geo estimate skipped (invalid telemetry); snapshots keep timestamp names. "
+                "tel_map keys lat/lon/yaw/rel_alt may be NaN or missing."
+            )
         plan = self._build_return_home_plan(
             home_lat=home.latitude_deg,
             home_lon=home.longitude_deg,
@@ -195,10 +318,10 @@ class RescueMissionDispatcher:
         asyncio.create_task(
             self._run_analysis(
                 trace_id=trace_id,
-                bbox_xyxy=bbox_xyxy,
-                image_wh=image_wh,
                 tel_map=tel_map,
                 crop_path=crop_path,
+                person_offset=offset,
+                person_geo=geo,
             ),
             name="rescue_analysis",
         )
@@ -242,10 +365,10 @@ class RescueMissionDispatcher:
         self,
         *,
         trace_id: str,
-        bbox_xyxy: tuple[float, float, float, float],
-        image_wh: tuple[int, int],
         tel_map: dict[str, Any],
         crop_path: Path | None,
+        person_offset: PersonOffset,
+        person_geo: PersonGeoEstimate | None,
     ) -> None:
         """Send the person crop to Gemma and log the situation analysis.
 
@@ -254,10 +377,10 @@ class RescueMissionDispatcher:
 
         Args:
             trace_id: Pipeline trace ID to correlate all rescue log events.
-            bbox_xyxy: Person bounding box in preview pixels (x1, y1, x2, y2).
-            image_wh: Preview frame dimensions (width, height) in pixels.
             tel_map: Telemetry snapshot taken at trigger time.
             crop_path: Path to the person-crop JPEG to send to Gemma.
+            person_offset: Body-frame offset computed alongside geo (or geometry-only if no tel).
+            person_geo: Estimated person WGS84 position when telemetry was valid, else ``None``.
         """
         if crop_path is None:
             log.warning("Rescue analysis skipped: no crop_path (unexpected with image LLM enabled).")
@@ -267,35 +390,22 @@ class RescueMissionDispatcher:
                 {"error": "missing_crop_path"},
             )
             return
-        rel_alt = float(tel_map.get("relative_altitude_m", 0.0))
-        try:
-            lat_deg = float(tel_map.get("latitude_deg", 0.0))
-        except (TypeError, ValueError):
-            lat_deg = 0.0
-        try:
-            lon_deg = float(tel_map.get("longitude_deg", 0.0))
-        except (TypeError, ValueError):
-            lon_deg = 0.0
+        rel_alt = _telemetry_float(tel_map, "relative_altitude_m")
+        lat_deg = _telemetry_float(tel_map, "latitude_deg")
+        lon_deg = _telemetry_float(tel_map, "longitude_deg")
 
-        offset = estimate_person_offset(
-            bbox_xyxy=bbox_xyxy,
-            image_wh=image_wh,
-            drone_altitude_m=rel_alt,
-            camera_pitch_deg=self._camera_mount_pitch_deg,
-            hfov_deg=self._camera_hfov_deg,
-            vfov_deg=self._camera_vfov_deg,
-        )
-        self._json_logger.log(
-            "rescue_person_offset_estimated",
-            trace_id,
-            {
-                "latitude_deg": lat_deg,
-                "longitude_deg": lon_deg,
-                "forward_m": offset.forward_m,
-                "right_m": offset.right_m,
-                "relative_altitude_m": rel_alt,
-            },
-        )
+        offset = person_offset
+        offset_payload: dict[str, Any] = {
+            "latitude_deg": lat_deg,
+            "longitude_deg": lon_deg,
+            "forward_m": offset.forward_m,
+            "right_m": offset.right_m,
+            "relative_altitude_m": rel_alt,
+        }
+        if person_geo is not None:
+            offset_payload["person_latitude_deg"] = person_geo.latitude_deg
+            offset_payload["person_longitude_deg"] = person_geo.longitude_deg
+        self._json_logger.log("rescue_person_offset_estimated", trace_id, offset_payload)
 
         try:
             image_bytes = crop_path.read_bytes()
@@ -310,6 +420,8 @@ class RescueMissionDispatcher:
             forward_m=offset.forward_m,
             right_m=offset.right_m,
             drone_alt_m=rel_alt,
+            person_latitude_deg=person_geo.latitude_deg if person_geo is not None else None,
+            person_longitude_deg=person_geo.longitude_deg if person_geo is not None else None,
         )
 
         async with self._llm_lock:
@@ -327,15 +439,15 @@ class RescueMissionDispatcher:
                 return
 
         log.info("Rescue analysis from Gemma:\n%s", analysis)
-        self._json_logger.log(
-            "rescue_analysis_completed",
-            trace_id,
-            {
-                "analysis_text": analysis,
-                "latitude_deg": lat_deg,
-                "longitude_deg": lon_deg,
-                "forward_m": offset.forward_m,
-                "right_m": offset.right_m,
-                "relative_altitude_m": rel_alt,
-            },
-        )
+        done_payload: dict[str, Any] = {
+            "analysis_text": analysis,
+            "latitude_deg": lat_deg,
+            "longitude_deg": lon_deg,
+            "forward_m": offset.forward_m,
+            "right_m": offset.right_m,
+            "relative_altitude_m": rel_alt,
+        }
+        if person_geo is not None:
+            done_payload["person_latitude_deg"] = person_geo.latitude_deg
+            done_payload["person_longitude_deg"] = person_geo.longitude_deg
+        self._json_logger.log("rescue_analysis_completed", trace_id, done_payload)

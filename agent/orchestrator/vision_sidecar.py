@@ -349,6 +349,7 @@ class _OverlayRecorder:
         dispatcher.request_rescue(
             bbox_xyxy=fire.best_detection.xyxy,
             image_wh=(w, h),
+            full_path=full_path,
             crop_path=crop_path,
         )
 

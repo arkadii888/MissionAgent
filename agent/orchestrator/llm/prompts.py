@@ -35,7 +35,8 @@ def build_user_prompt(
 
     Args:
         user_prompt: Natural-language mission request.
-        telemetry: Keys ``latitude_deg``, ``longitude_deg``, ``relative_altitude_m``, ``absolute_altitude_m``.
+        telemetry: Keys ``latitude_deg``, ``longitude_deg``, ``relative_altitude_m``, ``absolute_altitude_m``,
+            ``yaw_deg`` (heading in degrees when available).
         mission_status: Short status string from ``MissionState.prompt_mission_status()``.
     """
     return (
@@ -45,6 +46,7 @@ def build_user_prompt(
         f"- longitude_deg: {telemetry.get('longitude_deg')}\n"
         f"- relative_altitude_m: {telemetry.get('relative_altitude_m')}\n"
         f"- absolute_altitude_m: {telemetry.get('absolute_altitude_m')}\n"
+        f"- yaw_deg: {telemetry.get('yaw_deg')}\n"
         "Intent checklist:\n"
         "1) Convert the user request into an ordered list of mission intents.\n"
         "2) For world-frame compass legs: use move_directional for named directions (north, southeast, …); "
@@ -113,11 +115,15 @@ def build_rescue_analysis_user_prompt(
     forward_m: float,
     right_m: float,
     drone_alt_m: float,
+    person_latitude_deg: float | None = None,
+    person_longitude_deg: float | None = None,
 ) -> str:
     """User message for the Gemma rescue situation-analysis call.
 
     Embeds the drone's WGS-84 position from telemetry plus the body-frame offset
     estimate so the model has both geo context and approximate relative distance.
+    When ``person_latitude_deg`` / ``person_longitude_deg`` are set, includes the
+    flat-earth projection of that offset using heading and camera geometry.
 
     Args:
         latitude_deg: Drone latitude in decimal degrees (WGS-84) at trigger time.
@@ -125,14 +131,23 @@ def build_rescue_analysis_user_prompt(
         forward_m: Estimated metres ahead of the drone (positive = in front).
         right_m: Estimated metres to the right of the drone (positive = right).
         drone_alt_m: Drone relative altitude above ground in metres at trigger time.
+        person_latitude_deg: Optional estimated person latitude (degrees).
+        person_longitude_deg: Optional estimated person longitude (degrees).
 
     Returns:
         User prompt string ready to pass as ``user_text`` to ``LlamaClient.analyze_image``.
     """
+    geo_line = ""
+    if person_latitude_deg is not None and person_longitude_deg is not None:
+        geo_line = (
+            f"The person's estimated ground position (WGS-84) is approximately "
+            f"latitude {person_latitude_deg:.7f} deg, longitude {person_longitude_deg:.7f} deg. "
+        )
     return (
         f"The drone's current position (WGS-84) is latitude {latitude_deg:.7f} deg, "
         f"longitude {longitude_deg:.7f} deg, at {drone_alt_m:.1f} m AGL. "
-        "The detected person is estimated in the drone body frame as approximately "
+        + geo_line
+        + "The detected person is estimated in the drone body frame as approximately "
         f"{forward_m:.1f} m ahead and {right_m:.1f} m to the right of the drone "
         "(positive right). Use the image together with these numbers. "
         "Analyse the image, estimate the person's condition, and propose an action plan."
