@@ -5,8 +5,8 @@ When the person-rescue trigger fires on the camera thread, it calls
 asyncio loop via ``run_coroutine_threadsafe`` so the camera thread is never blocked.
 
 The coroutine uploads a deterministic return-home-and-land mission via gRPC, then
-starts a parallel asyncio task that asks Gemma to analyse the saved crop image and
-log a situation estimate and action plan.
+optionally starts a parallel asyncio task that asks Gemma to analyse the saved crop
+image (when ``image_llm_enabled`` is true) and log a situation estimate and action plan.
 """
 
 import asyncio
@@ -50,14 +50,15 @@ class RescueMissionDispatcher:
         camera_mount_pitch_deg: float,
         camera_hfov_deg: float,
         camera_vfov_deg: float,
+        image_llm_enabled: bool = True,
     ) -> None:
         """Initialise the dispatcher.
 
         Args:
             loop: The running asyncio event loop. Used by ``run_coroutine_threadsafe``.
             client: Live gRPC client for uploading missions.
-            llm: LlamaClient connected to llama-server (must be started with --mmproj
-                for the vision analysis to work).
+            llm: LlamaClient connected to llama-server (use ``--mmproj`` when
+                ``image_llm_enabled`` is true for rescue image analysis).
             cache: Shared telemetry cache; queried at trigger time for current altitude.
             home_state: Stores the first-takeoff lat/lon used as the RTH destination.
             json_logger: Pipeline JSONL logger for all rescue events.
@@ -66,6 +67,8 @@ class RescueMissionDispatcher:
             camera_mount_pitch_deg: Camera tilt from horizontal in degrees (90 = nadir).
             camera_hfov_deg: Camera horizontal field of view in degrees.
             camera_vfov_deg: Camera vertical field of view in degrees.
+            image_llm_enabled: If false, return-home upload still runs but the follow-up
+                multimodal crop analysis is skipped (text-only ``plan_mission`` remains available).
         """
         self._loop = loop
         self._client = client
@@ -77,6 +80,7 @@ class RescueMissionDispatcher:
         self._camera_mount_pitch_deg = float(camera_mount_pitch_deg)
         self._camera_hfov_deg = float(camera_hfov_deg)
         self._camera_vfov_deg = float(camera_vfov_deg)
+        self._image_llm_enabled = bool(image_llm_enabled)
         # Serialises Gemma calls so mission planning and analysis do not interleave.
         self._llm_lock = asyncio.Lock()
 
@@ -172,6 +176,18 @@ class RescueMissionDispatcher:
             trace_id,
             {"mission_name": plan.get("mission_name"), "item_count": len(proto.items)},
         )
+
+        if not self._image_llm_enabled:
+            log.info(
+                "Rescue image LLM analysis disabled (RESCUE_IMAGE_LLM_ENABLED); "
+                "skipping multimodal crop prompt."
+            )
+            self._json_logger.log(
+                "rescue_analysis_skipped",
+                trace_id,
+                {"reason": "image_llm_disabled"},
+            )
+            return
 
         # Fire-and-forget: analysis runs while the drone is already flying home.
         asyncio.create_task(

@@ -29,6 +29,9 @@ class Settings:
         camera_mount_pitch_deg: Camera mount angle down from horizontal (90=nadir). Env: ``CAMERA_MOUNT_PITCH_DEG``.
         camera_hfov_deg: Camera horizontal field of view in degrees. Env: ``CAMERA_HFOV_DEG``.
         camera_vfov_deg: Camera vertical field of view in degrees. Env: ``CAMERA_VFOV_DEG``.
+        rescue_image_llm_enabled: When false, skip post-rescue multimodal image analysis
+            (no second LLM call with the crop). Pair with llama-server started without ``--mmproj``.
+            Env: ``RESCUE_IMAGE_LLM_ENABLED`` (default true).
     """
 
     llama_cpp_url: str | None
@@ -54,6 +57,7 @@ class Settings:
     camera_mount_pitch_deg: float
     camera_hfov_deg: float
     camera_vfov_deg: float
+    rescue_image_llm_enabled: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -79,4 +83,6 @@ class Settings:
             camera_mount_pitch_deg=float(os.getenv("CAMERA_MOUNT_PITCH_DEG", "90.0")),
             camera_hfov_deg=float(os.getenv("CAMERA_HFOV_DEG", "66.0")),
             camera_vfov_deg=float(os.getenv("CAMERA_VFOV_DEG", "41.0")),
+            rescue_image_llm_enabled=os.getenv("RESCUE_IMAGE_LLM_ENABLED", "1").strip().lower()
+            in {"1", "true", "yes", "on"},
         )

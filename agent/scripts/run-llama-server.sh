@@ -16,6 +16,8 @@ fi
 BINARY_PATH="${BINARY_PATH:-$AGENT_DIR/llama.cpp/build/bin/llama-server}"
 MODEL_PATH="${MODEL_PATH:-$AGENT_DIR/models/gemma-4-E2B-it-Q4_K_M.gguf}"
 PROJ_PATH="${PROJ_PATH:-$AGENT_DIR/models/mmproj-F16.gguf}"
+# When 0/false/off, omit --mmproj (text-only server; matches orchestrator RESCUE_IMAGE_LLM_ENABLED=0).
+RESCUE_IMAGE_LLM_ENABLED="${RESCUE_IMAGE_LLM_ENABLED:-1}"
 PORT="${PORT:-8080}"
 NGL="${NGL:-99}"
 CTX_SIZE="${CTX_SIZE:-4096}"
@@ -43,15 +45,21 @@ if [ ! -f "$MODEL_PATH" ]; then
   exit 1
 fi
 
-if [ ! -f "$PROJ_PATH" ]; then
-  echo "mmproj file not found: $PROJ_PATH"
-  exit 1
+_load_mmproj=1
+case "$(printf '%s' "${RESCUE_IMAGE_LLM_ENABLED}" | tr '[:upper:]' '[:lower:]')" in
+  0|false|no|off) _load_mmproj=0 ;;
+esac
+
+if [ "$_load_mmproj" = 1 ]; then
+  if [ ! -f "$PROJ_PATH" ]; then
+    echo "mmproj file not found: $PROJ_PATH"
+    exit 1
+  fi
 fi
 
 CMD=(
   "$BINARY_PATH"
   -m "$MODEL_PATH"
-  --mmproj "$PROJ_PATH"
   --port "$PORT"
   --n-gpu-layers "$NGL"
   -c "$CTX_SIZE"
@@ -64,6 +72,12 @@ CMD=(
   --flash-attn "$FLASH_ATTN"
   --reasoning "$REASONING"
 )
+
+if [ "$_load_mmproj" = 1 ]; then
+  CMD+=(--mmproj "$PROJ_PATH")
+else
+  echo "RESCUE_IMAGE_LLM_ENABLED is off: starting llama-server without --mmproj (text chat only)."
+fi
 
 if [ "$JINJA" = "1" ]; then
   CMD+=(--jinja)
