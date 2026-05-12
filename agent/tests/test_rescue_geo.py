@@ -1,5 +1,4 @@
 """Tests for estimate_person_offset (pinhole camera geometry)."""
-from __future__ import annotations
 
 import math
 

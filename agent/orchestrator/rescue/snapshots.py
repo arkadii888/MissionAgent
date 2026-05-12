@@ -1,5 +1,4 @@
 """Save rescue snapshot images: annotated full frame and cropped person region."""
-from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime

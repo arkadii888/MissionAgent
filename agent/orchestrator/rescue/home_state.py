@@ -1,5 +1,4 @@
 """Thread-safe, set-once storage of the drone's first-takeoff home location."""
-from __future__ import annotations
 
 import os
 from dataclasses import dataclass

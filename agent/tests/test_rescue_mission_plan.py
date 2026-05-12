@@ -1,5 +1,4 @@
 """Tests for RescueMissionDispatcher._build_rescue_plan round-trip through expand_intents_to_mission."""
-from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock

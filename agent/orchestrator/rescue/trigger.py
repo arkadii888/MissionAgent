@@ -18,7 +18,6 @@ DISABLED (terminal state)
     Entered permanently after the trigger fires once.  No further rescues will be
     dispatched for the rest of the flight.
 """
-from __future__ import annotations
 
 import time
 from dataclasses import dataclass

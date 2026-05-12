@@ -5,7 +5,6 @@ Upgrade path (TODO):
   rotate the (forward_m, right_m) body-frame vector by that heading, then add the
   result to drone lat/lon to produce a world-frame estimate.
 """
-from __future__ import annotations
 
 import math
 from dataclasses import dataclass

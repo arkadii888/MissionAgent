@@ -1,7 +1,5 @@
 """ArduCam vision: rpicam smoke test, overlay recording to disk, person streak logging."""
 
-from __future__ import annotations
-
 import logging
 import os
 import shutil
