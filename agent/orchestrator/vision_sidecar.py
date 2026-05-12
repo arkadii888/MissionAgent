@@ -341,7 +341,9 @@ class _OverlayRecorder:
             return
 
         log.info(
-            "Rescue snapshots saved: full=%s crop=%s",
+            "Rescue snapshots saved (initial filenames): full=%s crop=%s | paths: full=%s crop=%s",
+            full_path.name,
+            crop_path.name if crop_path is not None else "(none)",
             full_path,
             crop_path if crop_path is not None else "(none)",
         )

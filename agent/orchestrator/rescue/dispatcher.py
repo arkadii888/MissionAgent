@@ -221,31 +221,44 @@ class RescueMissionDispatcher:
                     "relative_altitude_m": rel_alt,
                 },
             )
-            log.info(
-                "Rescue person geo estimate: person=(%.6f, %.6f) drone=(%.6f, %.6f) "
-                "yaw_deg=%.1f AGL=%.1fm N=%.2fm E=%.2fm forward=%.2fm right=%.2fm",
-                geo.latitude_deg,
-                geo.longitude_deg,
-                lat_deg,
-                lon_deg,
-                yaw_deg,
-                rel_alt,
-                geo.north_offset_m,
-                geo.east_offset_m,
-                offset.forward_m,
-                offset.right_m,
-            )
             try:
                 full_path, crop_path = _rename_rescue_snapshots(
                     full_path=full_path, crop_path=crop_path, geo=geo
                 )
                 log.info(
-                    "Rescue snapshots renamed to lat?lon stem: full=%s crop=%s",
+                    "Rescue: stored snapshot files full=%s person_crop=%s | "
+                    "person location estimate latitude_deg=%.6f longitude_deg=%.6f | "
+                    "drone lat=%.6f lon=%.6f yaw_deg=%.1f AGL_m=%.1f offsets_N/E_m=%.2f/%.2f body_fwd/right_m=%.2f/%.2f",
+                    full_path.name,
+                    crop_path.name if crop_path is not None else "(none)",
+                    geo.latitude_deg,
+                    geo.longitude_deg,
+                    lat_deg,
+                    lon_deg,
+                    yaw_deg,
+                    rel_alt,
+                    geo.north_offset_m,
+                    geo.east_offset_m,
+                    offset.forward_m,
+                    offset.right_m,
+                )
+                log.info(
+                    "Rescue: snapshot absolute paths full=%s crop=%s",
                     full_path,
                     crop_path if crop_path is not None else "(none)",
                 )
             except OSError as exc:
                 log.warning("Could not rename rescue snapshots to geo stem: %s", exc)
+                log.info(
+                    "Rescue: person location estimate latitude_deg=%.6f longitude_deg=%.6f | "
+                    "snapshot files (rename failed, names unchanged) full=%s person_crop=%s | paths full=%s crop=%s",
+                    geo.latitude_deg,
+                    geo.longitude_deg,
+                    full_path.name,
+                    crop_path.name if crop_path is not None else "(none)",
+                    full_path,
+                    crop_path if crop_path is not None else "(none)",
+                )
         else:
             geo = None
             offset = estimate_person_offset(
@@ -257,8 +270,15 @@ class RescueMissionDispatcher:
                 vfov_deg=self._camera_vfov_deg,
             )
             log.warning(
-                "Rescue geo estimate skipped (invalid telemetry); snapshots keep timestamp names. "
-                "tel_map keys lat/lon/yaw/rel_alt may be NaN or missing."
+                "Rescue geo estimate skipped (invalid telemetry); snapshots keep timestamp names "
+                "(full=%s crop=%s). tel_map lat/lon/yaw/rel_alt may be NaN or missing.",
+                full_path.name,
+                crop_path.name if crop_path is not None else "(none)",
+            )
+            log.info(
+                "Rescue: snapshot paths (no location estimate) full=%s crop=%s",
+                full_path,
+                crop_path if crop_path is not None else "(none)",
             )
         plan = self._build_return_home_plan(
             home_lat=home.latitude_deg,
