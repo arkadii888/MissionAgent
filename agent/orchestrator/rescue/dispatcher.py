@@ -8,7 +8,6 @@ The coroutine uploads a deterministic return-home-and-land mission via gRPC, the
 starts a parallel asyncio task that asks Gemma to analyse the saved crop image and
 log a situation estimate and action plan.
 """
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -17,6 +16,10 @@ from typing import Any
 
 from agent.orchestrator.grpc_client import InternalGrpcClient
 from agent.orchestrator.llm.client import LlamaClient
+from agent.orchestrator.llm.prompts import (
+    build_rescue_analysis_system_prompt,
+    build_rescue_analysis_user_prompt,
+)
 from agent.orchestrator.logging import JsonPipelineLogger, log_mission_multipoint_geojson
 from agent.orchestrator.mission_intents import expand_intents_to_mission
 from agent.orchestrator.mission_intents.proto import mission_list_to_ordered_dict
@@ -239,6 +242,14 @@ class RescueMissionDispatcher:
             crop_path: Path to the person-crop JPEG to send to Gemma.
         """
         rel_alt = float(tel_map.get("relative_altitude_m", 0.0))
+        try:
+            lat_deg = float(tel_map.get("latitude_deg", 0.0))
+        except (TypeError, ValueError):
+            lat_deg = 0.0
+        try:
+            lon_deg = float(tel_map.get("longitude_deg", 0.0))
+        except (TypeError, ValueError):
+            lon_deg = 0.0
 
         offset = estimate_person_offset(
             bbox_xyxy=bbox_xyxy,
@@ -252,6 +263,8 @@ class RescueMissionDispatcher:
             "rescue_person_offset_estimated",
             trace_id,
             {
+                "latitude_deg": lat_deg,
+                "longitude_deg": lon_deg,
                 "forward_m": offset.forward_m,
                 "right_m": offset.right_m,
                 "relative_altitude_m": rel_alt,
@@ -264,18 +277,13 @@ class RescueMissionDispatcher:
             log.exception("Failed to read person crop for Gemma analysis: %s", exc)
             return
 
-        system = (
-            "You are a rescue assistant analysing an aerial image captured by a drone. "
-            "Focus on: the person's posture (standing, sitting, lying down, or unknown), "
-            "the surrounding terrain and any immediate hazards visible. "
-            "Provide a health concern estimate (low / medium / high) with one or two "
-            "sentences of reasoning, and a concise numbered action plan for rescuers."
-        )
-        user = (
-            f"The drone is flying at {rel_alt:.1f} m AGL and detected a person "
-            f"approximately {offset.forward_m:.1f} m ahead and "
-            f"{offset.right_m:.1f} m to the right of the drone's current position. "
-            "Analyse the image, estimate the person's condition, and propose an action plan."
+        system = build_rescue_analysis_system_prompt()
+        user = build_rescue_analysis_user_prompt(
+            latitude_deg=lat_deg,
+            longitude_deg=lon_deg,
+            forward_m=offset.forward_m,
+            right_m=offset.right_m,
+            drone_alt_m=rel_alt,
         )
 
         async with self._llm_lock:
@@ -298,6 +306,8 @@ class RescueMissionDispatcher:
             trace_id,
             {
                 "analysis_text": analysis,
+                "latitude_deg": lat_deg,
+                "longitude_deg": lon_deg,
                 "forward_m": offset.forward_m,
                 "right_m": offset.right_m,
                 "relative_altitude_m": rel_alt,

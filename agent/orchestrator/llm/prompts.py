@@ -1,4 +1,4 @@
-"""Text templates for the mission-planning LLM (system + user messages)."""
+"""Text templates for the mission-planning and rescue-analysis LLM prompts."""
 
 from collections.abc import Mapping
 
@@ -85,4 +85,55 @@ def build_user_prompt(
         '{"type":"move_bearing","distance_m":100,"bearing_deg":30},{"type":"land"}]}\n'
         f"Mission status: {mission_status}\n"
         "Generate mission intents now."
+    )
+
+
+def build_rescue_analysis_system_prompt() -> str:
+    """System message for the Gemma rescue situation-analysis call.
+
+    Instructs the model to act as an aerial rescue assistant and focus on
+    the three key outputs: posture, health concern level, and action plan.
+
+    Returns:
+        System prompt string ready to pass as ``system`` to ``LlamaClient.analyze_image``.
+    """
+    return (
+        "You are a rescue assistant analysing an aerial image captured by a drone. "
+        "Focus on: the person's posture (standing, sitting, lying down, or unknown), "
+        "the surrounding terrain and any immediate hazards visible. "
+        "Provide a health concern estimate (low / medium / high) with one or two "
+        "sentences of reasoning, and a concise numbered action plan for rescuers."
+    )
+
+
+def build_rescue_analysis_user_prompt(
+    *,
+    latitude_deg: float,
+    longitude_deg: float,
+    forward_m: float,
+    right_m: float,
+    drone_alt_m: float,
+) -> str:
+    """User message for the Gemma rescue situation-analysis call.
+
+    Embeds the drone's WGS-84 position from telemetry plus the body-frame offset
+    estimate so the model has both geo context and approximate relative distance.
+
+    Args:
+        latitude_deg: Drone latitude in decimal degrees (WGS-84) at trigger time.
+        longitude_deg: Drone longitude in decimal degrees (WGS-84) at trigger time.
+        forward_m: Estimated metres ahead of the drone (positive = in front).
+        right_m: Estimated metres to the right of the drone (positive = right).
+        drone_alt_m: Drone relative altitude above ground in metres at trigger time.
+
+    Returns:
+        User prompt string ready to pass as ``user_text`` to ``LlamaClient.analyze_image``.
+    """
+    return (
+        f"The drone's current position (WGS-84) is latitude {latitude_deg:.7f} deg, "
+        f"longitude {longitude_deg:.7f} deg, at {drone_alt_m:.1f} m AGL. "
+        "The detected person is estimated in the drone body frame as approximately "
+        f"{forward_m:.1f} m ahead and {right_m:.1f} m to the right of the drone "
+        "(positive right). Use the image together with these numbers. "
+        "Analyse the image, estimate the person's condition, and propose an action plan."
     )
