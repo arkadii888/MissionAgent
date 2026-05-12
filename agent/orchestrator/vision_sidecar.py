@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -17,12 +16,10 @@ import numpy as np
 from agent.orchestrator.camera_manager import CameraManager
 from agent.orchestrator.inference.detection_manager import DetectionManager
 from agent.orchestrator.inference.yolo_common import Detection, scale_detections_xyxy
+from agent.orchestrator.rescue.dispatcher import RescueMissionDispatcher
 from agent.orchestrator.rescue.snapshots import save_rescue_snapshots
 from agent.orchestrator.rescue.trigger import PersonRescueTrigger
 from agent.orchestrator.vision_overlay import annotate_frame
-
-if TYPE_CHECKING:
-    from agent.orchestrator.rescue.dispatcher import RescueMissionDispatcher
 
 log = logging.getLogger(__name__)
 
