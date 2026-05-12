@@ -168,6 +168,7 @@ class _OverlayRecorder:
         self._rescue_trigger: PersonRescueTrigger | None = None
         self._rescue_dispatcher: RescueMissionDispatcher | None = None
         self._rescue_photos_dir: Path | None = None
+        self._rescue_save_person_crop: bool = True
         self._rescue_lock = threading.Lock()
 
     def set_rescue_dispatcher(
@@ -178,6 +179,7 @@ class _OverlayRecorder:
         rescue_person_frames: int,
         rescue_arm_delay_s: float,
         rescue_photos_dir: Path,
+        rescue_save_person_crop: bool = True,
     ) -> None:
         """Arm the rescue trigger.  Safe to call from any thread after start().
 
@@ -191,7 +193,8 @@ class _OverlayRecorder:
             rescue_person_frames: Consecutive qualifying frames before the trigger fires.
             rescue_arm_delay_s: Seconds after the first mission is sent before the
                 trigger becomes active (gives the drone time to fly away from the operator).
-            rescue_photos_dir: Directory where annotated frame and person crop are saved.
+            rescue_photos_dir: Directory where annotated frame (and optionally crop) are saved.
+            rescue_save_person_crop: When false, only the annotated full-frame JPEG is written.
         """
         trigger = PersonRescueTrigger(
             min_confidence=rescue_person_conf,
@@ -202,12 +205,14 @@ class _OverlayRecorder:
             self._rescue_trigger = trigger
             self._rescue_dispatcher = dispatcher
             self._rescue_photos_dir = rescue_photos_dir
+            self._rescue_save_person_crop = rescue_save_person_crop
         log.info(
-            "Rescue trigger armed (conf=%.2f frames=%d arm_delay=%.0fs photos_dir=%s)",
+            "Rescue trigger armed (conf=%.2f frames=%d arm_delay=%.0fs photos_dir=%s save_person_crop=%s)",
             rescue_person_conf,
             rescue_person_frames,
             rescue_arm_delay_s,
             rescue_photos_dir,
+            rescue_save_person_crop,
         )
 
     def notify_mission_sent(self) -> None:
@@ -304,6 +309,7 @@ class _OverlayRecorder:
             trigger = self._rescue_trigger
             dispatcher = self._rescue_dispatcher
             photos_dir = self._rescue_photos_dir
+            save_person_crop = self._rescue_save_person_crop
 
         if trigger is None or dispatcher is None or photos_dir is None:
             return
@@ -325,13 +331,20 @@ class _OverlayRecorder:
 
         try:
             full_path, crop_path = save_rescue_snapshots(
-                frame_bgr, dets, out_dir=photos_dir
+                frame_bgr,
+                dets,
+                out_dir=photos_dir,
+                save_person_crop=save_person_crop,
             )
         except Exception:
             log.exception("save_rescue_snapshots failed")
             return
 
-        log.info("Rescue snapshots saved: full=%s crop=%s", full_path, crop_path)
+        log.info(
+            "Rescue snapshots saved: full=%s crop=%s",
+            full_path,
+            crop_path if crop_path is not None else "(none)",
+        )
 
         dispatcher.request_rescue(
             bbox_xyxy=fire.best_detection.xyxy,

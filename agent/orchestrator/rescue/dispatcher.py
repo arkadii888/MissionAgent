@@ -89,7 +89,7 @@ class RescueMissionDispatcher:
         *,
         bbox_xyxy: tuple[float, float, float, float],
         image_wh: tuple[int, int],
-        crop_path: Path,
+        crop_path: Path | None,
     ) -> None:
         """Submit a rescue coroutine from any thread.
 
@@ -100,7 +100,8 @@ class RescueMissionDispatcher:
             bbox_xyxy: Bounding box of the detected person in preview-frame pixel
                 coordinates (x1, y1, x2, y2). Used for the body-frame offset estimate.
             image_wh: Width and height of the preview frame in pixels.
-            crop_path: Path to the saved person-crop JPEG sent to Gemma for analysis.
+            crop_path: Path to the saved person-crop JPEG for multimodal analysis, or
+                ``None`` when only a full-frame snapshot was saved.
         """
         coro = self._run_rescue(
             bbox_xyxy=bbox_xyxy,
@@ -114,14 +115,15 @@ class RescueMissionDispatcher:
         *,
         bbox_xyxy: tuple[float, float, float, float],
         image_wh: tuple[int, int],
-        crop_path: Path,
+        crop_path: Path | None,
     ) -> None:
         """Upload return-home mission then start the Gemma analysis task.
 
         Args:
             bbox_xyxy: Person bounding box in preview pixels (x1, y1, x2, y2).
             image_wh: Preview frame dimensions (width, height) in pixels.
-            crop_path: Path to the person-crop JPEG for the Gemma multimodal call.
+            crop_path: Path to the person-crop JPEG for the Gemma multimodal call, or
+                ``None`` if no crop was saved.
         """
         home = self._home_state.get()
         if home is None:
@@ -243,7 +245,7 @@ class RescueMissionDispatcher:
         bbox_xyxy: tuple[float, float, float, float],
         image_wh: tuple[int, int],
         tel_map: dict[str, Any],
-        crop_path: Path,
+        crop_path: Path | None,
     ) -> None:
         """Send the person crop to Gemma and log the situation analysis.
 
@@ -257,6 +259,14 @@ class RescueMissionDispatcher:
             tel_map: Telemetry snapshot taken at trigger time.
             crop_path: Path to the person-crop JPEG to send to Gemma.
         """
+        if crop_path is None:
+            log.warning("Rescue analysis skipped: no crop_path (unexpected with image LLM enabled).")
+            self._json_logger.log(
+                "rescue_analysis_failed",
+                trace_id,
+                {"error": "missing_crop_path"},
+            )
+            return
         rel_alt = float(tel_map.get("relative_altitude_m", 0.0))
         try:
             lat_deg = float(tel_map.get("latitude_deg", 0.0))

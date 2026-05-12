@@ -342,6 +342,7 @@ async def run_mission_test_loop() -> None:
                     rescue_person_frames=settings.rescue_person_frames,
                     rescue_arm_delay_s=settings.rescue_arm_delay_s,
                     rescue_photos_dir=Path(settings.rescue_photos_dir),
+                    rescue_save_person_crop=settings.rescue_image_llm_enabled,
                 )
 
             telemetry_task = asyncio.create_task(

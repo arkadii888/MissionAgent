@@ -1,4 +1,4 @@
-"""Save rescue snapshot images: annotated full frame and cropped person region."""
+"""Save rescue snapshot images: annotated full frame and optional cropped person region."""
 
 from collections.abc import Iterable
 from datetime import datetime
@@ -38,27 +38,28 @@ def save_rescue_snapshots(
     dets: list[Detection],
     *,
     out_dir: Path,
-) -> tuple[Path, Path]:
-    """Save an annotated full frame and a cropped person region to *out_dir*.
+    save_person_crop: bool = True,
+) -> tuple[Path, Path | None]:
+    """Save an annotated full frame and optionally a cropped person region to *out_dir*.
 
-    Both images are written as JPEG files with a timestamp-based filename. The
-    full frame receives all detection overlays so it can be reviewed later. The
-    crop is tightly bounded to the highest-confidence person bounding box (with a
-    small margin) and is passed to Gemma for multimodal analysis.
+    The full frame is always written as a JPEG with a timestamp-based filename and
+    receives all detection overlays. When ``save_person_crop`` is true, a second JPEG
+    is written: the crop is tightly bounded to the highest-confidence person bounding
+    box (with a small margin) and is used for multimodal LLM analysis.
 
-    If no person bbox is available (e.g. detections have already aged out) the
-    crop falls back to the central quarter of the frame.
+    If no person bbox is available (e.g. detections have already aged out) the crop
+    falls back to the central quarter of the frame (only when ``save_person_crop``).
 
     Args:
         frame_bgr: Source BGR frame as a NumPy array (shape H×W×3).
         dets: Detection list for this frame; used to draw overlays and pick the
-            person crop.
-        out_dir: Directory in which to create the two JPEG files. Created
-            automatically if it does not exist.
+            person crop when enabled.
+        out_dir: Directory for JPEG output. Created automatically if missing.
+        save_person_crop: When false, only the annotated full frame is written.
 
     Returns:
-        A (full_frame_path, crop_path) tuple of Path objects pointing to the
-        two written files.
+        ``(full_frame_path, crop_path)`` where ``crop_path`` is ``None`` if no crop
+        was saved.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     h, w = frame_bgr.shape[:2]
@@ -66,6 +67,13 @@ def save_rescue_snapshots(
     # Annotated full frame — drawn on a copy so the caller's array is untouched.
     full = frame_bgr.copy()
     annotate_frame(full, dets, image_is_bgr=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    full_path = out_dir / f"{ts}_full.jpg"
+    cv2.imwrite(str(full_path), full)
+
+    if not save_person_crop:
+        return full_path, None
 
     # Person crop: highest-confidence person bbox with a small margin, or centre fallback.
     xyxy = _best_person_xyxy(dets)
@@ -85,12 +93,7 @@ def save_rescue_snapshots(
         y2 = min(h - 1, y2 + margin)
 
     crop = frame_bgr[y1 : y2 + 1, x1 : x2 + 1].copy()
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    full_path = out_dir / f"{ts}_full.jpg"
     crop_path = out_dir / f"{ts}_person.jpg"
-
-    cv2.imwrite(str(full_path), full)
     cv2.imwrite(str(crop_path), crop)
 
     return full_path, crop_path

@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from agent.orchestrator.inference.yolo_common import Detection
 from agent.orchestrator.rescue.snapshots import save_rescue_snapshots
@@ -40,7 +39,16 @@ class TestSaveRescueSnapshots:
         save_rescue_snapshots(_bgr_frame(), [_person_det()], out_dir=nested)
         assert nested.is_dir()
 
+    def test_full_only_skips_person_jpeg(self, tmp_path: Path) -> None:
+        full, crop = save_rescue_snapshots(
+            _bgr_frame(), [_person_det()], out_dir=tmp_path, save_person_crop=False
+        )
+        assert full.exists() and full.stat().st_size > 0
+        assert crop is None
+        assert list(tmp_path.glob("*_person.jpg")) == []
+        assert len(list(tmp_path.glob("*.jpg"))) == 1
+
     def test_works_with_no_detections(self, tmp_path: Path) -> None:
         full, crop = save_rescue_snapshots(_bgr_frame(), [], out_dir=tmp_path)
         assert full.exists()
-        assert crop.exists()
+        assert crop is not None and crop.exists()
