@@ -21,6 +21,47 @@ def parse_size_env(name: str, default: tuple[int, int]) -> tuple[int, int]:
         return default
 
 
+def manual_exposure_controls_from_env() -> dict | None:
+    """
+    Picamera2 / libcamera manual exposure (rolling shutter / drone jello mitigation).
+
+    If ``ARDUCAM_EXPOSURE_TIME_US`` is set, use it as exposure duration in microseconds.
+    Else if ``ARDUCAM_SHUTTER_DENOM`` is set to N, use 1/N second (``1_000_000 // N`` μs),
+    e.g. ``ARDUCAM_SHUTTER_DENOM=500`` → ~1/500 s.
+
+    When either is used, auto exposure is disabled; optional ``ARDUCAM_MANUAL_ANALOGUE_GAIN``
+    (default ``1.0``) sets analogue gain. Unset both exposure vars to keep auto exposure.
+    """
+    raw_us = os.environ.get("ARDUCAM_EXPOSURE_TIME_US", "").strip()
+    raw_denom = os.environ.get("ARDUCAM_SHUTTER_DENOM", "").strip()
+    exposure_us: int | None = None
+    if raw_us:
+        try:
+            exposure_us = int(raw_us)
+        except ValueError:
+            log.warning("Invalid ARDUCAM_EXPOSURE_TIME_US=%r; using auto exposure.", raw_us)
+            return None
+    elif raw_denom:
+        try:
+            denom = int(raw_denom)
+            if denom <= 0:
+                log.warning("ARDUCAM_SHUTTER_DENOM must be positive; using auto exposure.")
+                return None
+            exposure_us = max(1, 1_000_000 // denom)
+        except ValueError:
+            log.warning("Invalid ARDUCAM_SHUTTER_DENOM=%r; using auto exposure.", raw_denom)
+            return None
+    if exposure_us is None or exposure_us <= 0:
+        return None
+    gain_raw = os.environ.get("ARDUCAM_MANUAL_ANALOGUE_GAIN", "1.0").strip()
+    try:
+        analogue_gain = float(gain_raw)
+    except ValueError:
+        log.warning("Invalid ARDUCAM_MANUAL_ANALOGUE_GAIN=%r; defaulting to 1.0.", gain_raw)
+        analogue_gain = 1.0
+    return {"AeEnable": False, "ExposureTime": exposure_us, "AnalogueGain": analogue_gain}
+
+
 CAPTURE_SIZE = parse_size_env("CAPTURE_SIZE", (4624, 3472))
 STREAM_DISPLAY_SIZE = parse_size_env("STREAM_DISPLAY_SIZE", (1280, 960))
 
@@ -150,12 +191,21 @@ class CameraManager:
                 return
 
         try:
-            self.picam2.set_controls({
+            ctrl: dict = {
                 "AfMode": controls.AfModeEnum.Continuous,
                 "AwbMode": controls.AwbModeEnum.Auto,
-            })
+            }
+            manual = manual_exposure_controls_from_env()
+            if manual is not None:
+                ctrl.update(manual)
+                log.info(
+                    "Manual exposure: AeEnable=False, ExposureTime=%s µs, AnalogueGain=%s.",
+                    manual["ExposureTime"],
+                    manual["AnalogueGain"],
+                )
+            self.picam2.set_controls(ctrl)
         except Exception as e:
-            log.warning("Camera controls (AF/AWB) skipped: %s", e)
+            log.warning("Camera controls (AF/AWB/exposure) skipped: %s", e)
 
         self.running = True
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
