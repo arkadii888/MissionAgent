@@ -20,9 +20,11 @@ PROJ_PATH="${PROJ_PATH:-$AGENT_DIR/models/mmproj-F16.gguf}"
 RESCUE_IMAGE_LLM_ENABLED="${RESCUE_IMAGE_LLM_ENABLED:-1}"
 PORT="${PORT:-8080}"
 NGL="${NGL:-99}"
-CTX_SIZE="${CTX_SIZE:-4096}"
+CTX_SIZE="${CTX_SIZE:-2048}"
 BATCH="${BATCH:-2048}"
-THREADS="${THREADS:-$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || sysctl -n hw.ncpu)}"
+UBATCH="${UBATCH:-}"
+# macOS: perflevel0 logical CPUs; Linux/Pi: getconf/nproc (hw.ncpu is not set on Linux).
+THREADS="${THREADS:-$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)}"
 PREDICT="${PREDICT:-2048}"
 TEMP="${TEMP:-1.0}"
 TOP_P="${TOP_P:-0.95}"
@@ -72,6 +74,10 @@ CMD=(
   --flash-attn "$FLASH_ATTN"
   --reasoning "$REASONING"
 )
+
+if [ -n "$UBATCH" ]; then
+  CMD+=(--ubatch-size "$UBATCH")
+fi
 
 if [ "$_load_mmproj" = 1 ]; then
   CMD+=(--mmproj "$PROJ_PATH")
