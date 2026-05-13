@@ -12,6 +12,7 @@ image (when ``image_llm_enabled`` is true) and log a situation estimate and acti
 import asyncio
 import logging
 import math
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,38 @@ def _rename_rescue_snapshots(
     return new_full, new_crop
 
 
+def _mirror_rescue_snapshots(
+    *,
+    full_path: Path,
+    crop_path: Path | None,
+    mirror_dir: Path | None,
+) -> None:
+    """Copy final JPEGs into *mirror_dir* when set and distinct from *full_path*'s parent."""
+    if mirror_dir is None:
+        return
+    try:
+        dest_root = mirror_dir.expanduser().resolve()
+        primary_dir = full_path.parent.resolve()
+    except OSError as exc:
+        log.warning("Rescue: mirror path resolve failed (%s): %s", mirror_dir, exc)
+        return
+    if dest_root == primary_dir:
+        return
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(full_path, dest_root / full_path.name)
+        if crop_path is not None and crop_path.is_file():
+            shutil.copy2(crop_path, dest_root / crop_path.name)
+        log.info(
+            "Rescue: mirrored snapshot JPEGs to %s (full=%s crop=%s)",
+            dest_root,
+            full_path.name,
+            crop_path.name if crop_path is not None and crop_path.is_file() else "(none)",
+        )
+    except OSError as exc:
+        log.warning("Rescue: could not mirror snapshots to %s: %s", mirror_dir, exc)
+
+
 class RescueMissionDispatcher:
     """Bridges the vision thread to asyncio for rescue mission upload and Gemma analysis.
 
@@ -89,6 +122,7 @@ class RescueMissionDispatcher:
         camera_hfov_deg: float,
         camera_vfov_deg: float,
         image_llm_enabled: bool = True,
+        rescue_photos_mirror_dir: Path | None = None,
     ) -> None:
         """Initialise the dispatcher.
 
@@ -107,6 +141,8 @@ class RescueMissionDispatcher:
             camera_vfov_deg: Camera vertical field of view in degrees.
             image_llm_enabled: If false, return-home upload still runs but the follow-up
                 multimodal crop analysis is skipped (text-only ``plan_mission`` remains available).
+            rescue_photos_mirror_dir: When set, copies the final full-frame and crop JPEGs here
+                (same basenames as after any geo-based rename). Disabled when ``None``.
         """
         self._loop = loop
         self._client = client
@@ -119,6 +155,7 @@ class RescueMissionDispatcher:
         self._camera_hfov_deg = float(camera_hfov_deg)
         self._camera_vfov_deg = float(camera_vfov_deg)
         self._image_llm_enabled = bool(image_llm_enabled)
+        self._rescue_photos_mirror_dir = rescue_photos_mirror_dir
         # Serialises Gemma calls so mission planning and analysis do not interleave.
         self._llm_lock = asyncio.Lock()
 
@@ -171,6 +208,11 @@ class RescueMissionDispatcher:
         home = self._home_state.get()
         if home is None:
             log.warning("Rescue trigger fired but home location is not set; skipping mission.")
+            _mirror_rescue_snapshots(
+                full_path=full_path,
+                crop_path=crop_path,
+                mirror_dir=self._rescue_photos_mirror_dir,
+            )
             return
 
         tel_map: dict[str, Any] = await self._cache.as_any()
@@ -280,6 +322,11 @@ class RescueMissionDispatcher:
                 full_path,
                 crop_path if crop_path is not None else "(none)",
             )
+        _mirror_rescue_snapshots(
+            full_path=full_path,
+            crop_path=crop_path,
+            mirror_dir=self._rescue_photos_mirror_dir,
+        )
         plan = self._build_return_home_plan(
             home_lat=home.latitude_deg,
             home_lon=home.longitude_deg,

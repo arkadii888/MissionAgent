@@ -333,6 +333,11 @@ async def run_mission_test_loop() -> None:
                 camera_hfov_deg=settings.camera_hfov_deg,
                 camera_vfov_deg=settings.camera_vfov_deg,
                 image_llm_enabled=settings.rescue_image_llm_enabled,
+                rescue_photos_mirror_dir=(
+                    Path(settings.rescue_photos_mirror_dir)
+                    if settings.rescue_photos_mirror_dir
+                    else None
+                ),
             )
             # Arm the vision sidecar with the dispatcher so it can trigger rescue.
             if vision_rt is not None:
