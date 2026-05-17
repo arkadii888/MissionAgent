@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 
 def _telemetry_block(telemetry: Mapping[str, float]) -> str:
+    """Format the telemetry subsection embedded in user prompts."""
     return (
         "Current telemetry:\n"
         f"- latitude_deg: {telemetry.get('latitude_deg')}\n"
@@ -15,6 +16,7 @@ def _telemetry_block(telemetry: Mapping[str, float]) -> str:
 
 
 def _simple_system_prompt(max_waypoints: int) -> str:
+    """Short system prompt without extended coordinate examples."""
     return (
         "You are Gemma 4 E2B, a drone mission intent planner. "
         "Return only valid JSON that matches the provided schema. "
@@ -27,6 +29,7 @@ def _simple_system_prompt(max_waypoints: int) -> str:
 
 
 def _extended_system_prompt(max_waypoints: int) -> str:
+    """System prompt with goto/RTL and coordinate guidance."""
     return (
         "You are Gemma 4 E2B, a drone mission intent planner. "
         "Return only valid JSON that matches the provided schema. "
@@ -57,6 +60,7 @@ def build_system_prompt(max_waypoints: int = 32, *, extended: bool = False) -> s
 
 
 def _simple_user_body(mission_status: str) -> str:
+    """User-message tail for non-extended prompt mode."""
     return (
         "Summary:\n"
         "Convert the request into ordered mission intents using only schema-defined types "
@@ -71,6 +75,7 @@ def _simple_user_body(mission_status: str) -> str:
 
 
 def _extended_user_body(mission_status: str) -> str:
+    """User-message tail with intent checklist and few-shot examples."""
     return (
         "Intent checklist:\n"
         "1) Convert the user request into an ordered list of mission intents.\n"

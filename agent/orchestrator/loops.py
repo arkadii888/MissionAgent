@@ -230,6 +230,8 @@ async def run_mission_test_loop() -> None:
 
     cache = TelemetryCache()
     mission = MissionState()
+    # TODO: Update mission phase from vehicle feedback (current waypoint index, mission
+    # complete) when InternalService exposes it over gRPC.
     stop = asyncio.Event()
     json_logger = JsonPipelineLogger(
         path=Path(settings.mission_json_log_path),

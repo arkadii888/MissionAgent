@@ -20,9 +20,6 @@ class InternalGrpcClient:
     Uses an insecure channel with keepalive options suitable for NATs or load balancers.
     Prefer TLS or Unix sockets where your deployment supports them.
 
-    Attributes:
-        channel: Underlying ``grpc.aio.Channel`` when you need manual control.
-
     Raises:
         ValueError: If ``settings.grpc_target`` is empty.
     """
@@ -33,6 +30,15 @@ class InternalGrpcClient:
         *,
         channel_options: tuple[tuple[str, int], ...] = _DEFAULT_CHANNEL_OPTIONS,
     ) -> None:
+        """Open an insecure gRPC channel to ``settings.grpc_target``.
+
+        Args:
+            settings: Must include a non-empty ``grpc_target``.
+            channel_options: Optional gRPC channel option tuples.
+
+        Raises:
+            ValueError: If ``settings.grpc_target`` is empty.
+        """
         if not settings.grpc_target:
             raise ValueError("Settings.grpc_target must be set (e.g. GRPC_TARGET=host:port)")
         self._settings = settings
@@ -41,10 +47,6 @@ class InternalGrpcClient:
             options=channel_options,
         )
         self._stub = internal_communication_pb2_grpc.InternalServiceStub(self._channel)
-
-    @property
-    def channel(self) -> grpc.aio.Channel:
-        return self._channel
 
     async def get_telemetry(
         self,

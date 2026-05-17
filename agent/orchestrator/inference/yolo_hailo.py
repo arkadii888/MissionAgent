@@ -59,6 +59,11 @@ logger = logging.getLogger(__name__)
 
 
 def hailo_platform_available() -> bool:
+    """Return whether ``hailo_platform`` imported successfully.
+
+    Returns:
+        ``True`` when Hailo Python bindings are available.
+    """
     return HEF is not None
 
 
@@ -244,6 +249,18 @@ class YoloHailoDetector:
         hef_path: str | None = None,
         conf_threshold: float = 0.25,
     ) -> None:
+        """Load a Hailo HEF and configure input/output vstreams.
+
+        Args:
+            hef_path: Path to ``.hef`` file; defaults to ``YOLO_HEF_PATH`` env.
+            conf_threshold: Minimum detection confidence (0–1).
+
+        Raises:
+            ImportError: If ``hailo_platform`` is not installed.
+            FileNotFoundError: If the HEF file is missing.
+            ValueError: If ``YOLO_NUMBER_TILES`` is invalid.
+            RuntimeError: If the HEF has no input vstreams.
+        """
         if not hailo_platform_available():
             raise ImportError(
                 "hailo_platform not installed. On Raspberry Pi install Hailo software "
@@ -775,6 +792,17 @@ class YoloHailoDetector:
         return out
 
     def detect(self, rgb: np.ndarray) -> list[Detection]:
+        """Run inference on an RGB frame and return detections in image coordinates.
+
+        Args:
+            rgb: uint8 array with shape ``(H, W, 3)`` in RGB order.
+
+        Returns:
+            Detections after tiling (if any), merge, and global NMS.
+
+        Raises:
+            ValueError: If ``rgb`` is not a 3-channel image.
+        """
         if rgb.ndim != 3 or rgb.shape[2] != 3:
             raise ValueError("Expected RGB image with shape (H, W, 3)")
 
@@ -903,6 +931,7 @@ class YoloHailoDetector:
         return self._nms_global(all_dets)
 
     def close(self) -> None:
+        """Release the Hailo device handle."""
         try:
             self._target.release()
         except Exception:

@@ -8,12 +8,16 @@ _INFERENCE_PKG = Path(__file__).resolve().parent
 
 
 def resolve_model_file(relative: str | Path) -> Path:
-    """
-    Resolve a path like ``models/yolo26n_b8.hef`` to an absolute path.
+    """Resolve a path like ``models/yolo26n_b8.hef`` to an absolute path.
 
     Walks upward from this package directory and returns the first place where the file
-    exists. If it is not found, returns ``<inference>.parents[2] / relative`` (legacy
-    “agent package root”) so callers still get a single path for error messages.
+    exists. If it is not found, returns a legacy default under the agent package root.
+
+    Args:
+        relative: Path relative to a discovered ``models/`` directory, or absolute.
+
+    Returns:
+        Resolved absolute path (may not exist if lookup failed).
     """
     rel = Path(relative)
     if rel.is_absolute():
