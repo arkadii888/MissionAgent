@@ -76,11 +76,13 @@ def append_waypoint(
 
 
 def handle_takeoff(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Set cruise altitude and emit a takeoff ``MissionItem``."""
     ctx.current_altitude_m = clamp_relative_altitude_m(require_float(intent, "altitude_m"))
     append_waypoint(ctx, vehicle_action=1, is_fly_through=False)
 
 
 def handle_move(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Apply a north/east/up offset in metres and emit a transit waypoint."""
     north_m = require_float(intent, "north_m")
     east_m = require_float(intent, "east_m")
     up_m = require_float(intent, "up_m")
@@ -122,6 +124,7 @@ def handle_goto_lat_lon(ctx: ExpansionContext, intent: Mapping[str, Any]) -> Non
 
 
 def handle_move_directional(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Move along a named compass direction (north, southeast, …)."""
     direction_raw = str(intent.get("direction", "")).strip().lower()
     if direction_raw not in _DIRECTION_UNIT:
         raise ValueError(f"unsupported world-frame direction: {direction_raw!r}")
@@ -145,6 +148,7 @@ def handle_move_bearing(ctx: ExpansionContext, intent: Mapping[str, Any]) -> Non
 
 
 def handle_move_vertical(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Change relative altitude (down only) without horizontal displacement."""
     direction_raw = str(intent.get("direction", "down")).strip().lower()
     if direction_raw != "down":
         raise ValueError("move_vertical only supports direction=down")
@@ -155,6 +159,7 @@ def handle_move_vertical(ctx: ExpansionContext, intent: Mapping[str, Any]) -> No
 
 
 def handle_turn_relative(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Rotate in place (``turn_around`` → 180° yaw) and emit a waypoint."""
     maneuver = str(intent.get("maneuver", "turn_around")).strip().lower()
     if maneuver != "turn_around":
         raise ValueError("turn_relative only supports maneuver=turn_around")
@@ -163,6 +168,7 @@ def handle_turn_relative(ctx: ExpansionContext, intent: Mapping[str, Any]) -> No
 
 
 def handle_safety_control(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Handle stop, hold, abort, or return-home safety actions."""
     raw_action = str(intent.get("action", "")).strip().lower()
     action = _SAFETY_ACTION_MAP.get(raw_action)
     if action is None:
@@ -177,6 +183,7 @@ def handle_safety_control(ctx: ExpansionContext, intent: Mapping[str, Any]) -> N
 
 
 def handle_loiter(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Set loiter time on the last waypoint, or create one if the plan is empty."""
     seconds = require_float(intent, "seconds")
     if not ctx.items:
         append_waypoint(ctx, vehicle_action=0, is_fly_through=False, loiter_time_s=seconds)
@@ -185,10 +192,12 @@ def handle_loiter(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
 
 
 def handle_yaw(ctx: ExpansionContext, intent: Mapping[str, Any]) -> None:
+    """Set pending yaw for the next emitted waypoint (no item until a move)."""
     ctx.pending_yaw_deg = normalize_yaw(require_float(intent, "degrees"))
 
 
 def handle_return_to_home(ctx: ExpansionContext, _intent: Mapping[str, Any]) -> None:
+    """Fly back to the telemetry origin in one fly-through leg."""
     north_delta_m = -ctx.north_total_m
     east_delta_m = -ctx.east_total_m
     ctx.north_total_m = 0.0
@@ -203,4 +212,5 @@ def handle_return_to_home(ctx: ExpansionContext, _intent: Mapping[str, Any]) -> 
 
 
 def handle_land(ctx: ExpansionContext, _intent: Mapping[str, Any]) -> None:
+    """Emit a land ``MissionItem`` at the current cumulative position."""
     append_waypoint(ctx, vehicle_action=2, is_fly_through=False)

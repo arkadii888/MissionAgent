@@ -12,6 +12,7 @@ class IntentRegistry:
     """Stores one handler per DSL intent ``type``; duplicate registration fails."""
 
     def __init__(self) -> None:
+        """Create an empty registry."""
         self._handlers: dict[str, IntentHandler] = {}
 
     def register(self, intent_type: str, handler: IntentHandler) -> None:
@@ -35,8 +36,3 @@ class IntentRegistry:
         except KeyError as exc:
             supported = ", ".join(sorted(self._handlers))
             raise ValueError(f"unsupported intent type {intent_type!r}; supported: {supported}") from exc
-
-    @property
-    def handlers(self) -> dict[str, IntentHandler]:
-        """Shallow copy of all registered handlers."""
-        return dict(self._handlers)

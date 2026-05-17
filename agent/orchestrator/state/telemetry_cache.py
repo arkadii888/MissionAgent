@@ -51,6 +51,7 @@ class TelemetryCache:
     """Holds latest ``TelemetrySnapshot``; safe for concurrent poller and planners."""
 
     def __init__(self) -> None:
+        """Create an empty cache (no sample until the first update)."""
         self._lock = asyncio.Lock()
         self._latest: TelemetrySnapshot | None = None
 
@@ -58,10 +59,20 @@ class TelemetryCache:
         self,
         response: internal_communication_pb2.TelemetryResponse,
     ) -> None:
+        """Store a snapshot from a ``GetTelemetry`` response.
+
+        Args:
+            response: Latest vehicle telemetry protobuf.
+        """
         async with self._lock:
             self._latest = TelemetrySnapshot.from_proto(response)
 
     async def get_snapshot(self) -> TelemetrySnapshot | None:
+        """Return the latest snapshot, or ``None`` before the first update.
+
+        Returns:
+            Frozen :class:`TelemetrySnapshot` or ``None``.
+        """
         async with self._lock:
             return self._latest
 

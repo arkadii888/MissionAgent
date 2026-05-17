@@ -34,6 +34,11 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def arducam_vision_enabled() -> bool:
+    """Return whether ``ARDUCAM_VISION`` is set to a truthy value.
+
+    Returns:
+        ``True`` when the ArduCam vision pipeline should start with the mission loop.
+    """
     return _env_flag("ARDUCAM_VISION")
 
 
@@ -155,6 +160,16 @@ class _OverlayRecorder:
         person_conf: float,
         person_frames: int,
     ) -> None:
+        """Create a recorder (call :meth:`start` after optional :meth:`set_rescue_dispatcher`).
+
+        Args:
+            cam: Live Picamera2 frame source.
+            detector: Background YOLO thread publishing ``latest`` detections.
+            out_dir: Directory for annotated MP4 output.
+            fps: Target recorder frame rate.
+            person_conf: Threshold for console person-streak logging.
+            person_frames: Consecutive frames required for that log line.
+        """
         self._cam = cam
         self._detector = detector
         self._out_dir = out_dir
@@ -228,9 +243,15 @@ class _OverlayRecorder:
             trigger.notify_mission_sent()
 
     def output_path(self) -> Path | None:
+        """Return the MP4 path after :meth:`start`, or ``None`` before recording begins.
+
+        Returns:
+            Absolute path to the current recording file.
+        """
         return self._out_path
 
     def start(self) -> None:
+        """Open the output file and start the overlay recording thread."""
         self._out_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._out_path = self._out_dir / f"arducam_{ts}.mp4"
@@ -356,6 +377,7 @@ class _OverlayRecorder:
         )
 
     def stop(self) -> None:
+        """Stop recording and join the overlay thread."""
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=5.0)
@@ -385,6 +407,7 @@ class VisionRuntime:
         self.recorder.notify_mission_sent()
 
     def stop(self) -> None:
+        """Stop recorder, detector, and camera in order."""
         self.recorder.stop()
         self.detector.stop()
         self.camera.stop()
@@ -428,6 +451,11 @@ def start_arducam_vision() -> VisionRuntime:
 
 
 def stop_arducam_vision(rt: VisionRuntime | None) -> None:
+    """Stop a vision runtime from :func:`start_arducam_vision` (no-op if ``rt`` is ``None``).
+
+    Args:
+        rt: Runtime returned by :func:`start_arducam_vision`, or ``None``.
+    """
     if rt is None:
         return
     try:

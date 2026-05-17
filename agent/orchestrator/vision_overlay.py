@@ -7,6 +7,14 @@ from agent.orchestrator.inference.yolo_common import Detection
 
 
 def color_rgb_for_class(class_id: int) -> tuple[int, int, int]:
+    """Deterministic RGB color for a COCO class id (for overlay boxes).
+
+    Args:
+        class_id: YOLO class index.
+
+    Returns:
+        ``(r, g, b)`` with each channel at least 50.
+    """
     x = (class_id * 7919 + 17) & 0xFFFFFF
     r, g, b = x & 255, (x >> 8) & 255, (x >> 16) & 255
     return (max(r, 50), max(g, 50), max(b, 50))

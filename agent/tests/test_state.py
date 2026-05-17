@@ -34,11 +34,10 @@ async def test_telemetry_cache_and_mission_state() -> None:
 
     await ms.set_mission("test", plan)
     assert (await ms.get_phase()) is MissionPhase.UPLOADED
-    assert "UPLOADED" in (await ms.prompt_mission_status())
-    await ms.mark_flying()
-    assert "FLYING" in (await ms.prompt_mission_status())
+    status = await ms.prompt_mission_status()
+    assert "UPLOADED" in status
+    assert "items=1" in status
+    assert "waypoint=" not in status
 
     copy = await ms.get_plan()
     assert copy is not None and len(copy.items) == 1
-    idx, n = await ms.get_waypoint_progress()
-    assert (idx, n) == (0, 1)

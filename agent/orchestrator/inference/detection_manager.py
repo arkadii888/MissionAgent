@@ -5,8 +5,6 @@ import threading
 import time
 
 import cv2
-from collections import deque
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,7 +17,6 @@ from .yolo_hailo import YoloHailoDetector
 
 logger = logging.getLogger(__name__)
 
-_HISTORY_MAX = 100
 _FPS_EMA_ALPHA = 0.15
 _LOG_INTERVAL_SEC = 1.0
 
@@ -31,32 +28,6 @@ def _resolve_model_path(path: str | None) -> str | None:
     if p.is_absolute():
         return str(p)
     return str(resolve_model_file(p))
-
-
-@dataclass
-class DetectionSnapshot:
-    """One recorded inference result for debugging."""
-    at: str
-    count: int
-    detections: list[dict[str, Any]]  # class_name, confidence, class_id
-
-
-@dataclass
-class PipelineDebugStats:
-    running: bool
-    backend: str  # hailo | none
-    detector_loaded: bool
-    frames_processed: int
-    frames_waited_none: int
-    last_inference_ms: float | None
-    inference_fps_ema: float
-    last_frame_shape: list[int] | None
-    last_frame_mean_rgb: list[float] | None
-    last_frame_std_rgb: list[float] | None
-    last_detection_count: int
-    last_inference_at_iso: str | None
-    last_error: str | None
-    hailo_runtime: dict[str, Any] | None = None
 
 
 def _warn_legacy_backend() -> None:
@@ -91,6 +62,11 @@ class DetectionManager:
     """Background thread: runs YOLO on latest camera frame (drops frames if inference is slower)."""
 
     def __init__(self, hef_path: str | None = None) -> None:
+        """Load the Hailo detector from ``hef_path`` or ``YOLO_HEF_PATH``.
+
+        Args:
+            hef_path: Optional path to a ``.hef`` file; uses env default when omitted.
+        """
         self.latest: list[Detection] = []
         self.lock = threading.Lock()
         self.running = False
@@ -109,7 +85,6 @@ class DetectionManager:
         self._last_detection_count = 0
         self._last_inference_at_iso: str | None = None
         self._last_error: str | None = None
-        self._history: deque[DetectionSnapshot] = deque(maxlen=_HISTORY_MAX)
         self._last_console_log = 0.0
 
         self._debug_log = os.environ.get("DETECTION_DEBUG_LOG", "").lower() in (
@@ -133,46 +108,12 @@ class DetectionManager:
 
         self.detector, self._backend = _create_detector(hef_path)
 
-    def get_debug_stats(self) -> PipelineDebugStats:
-        with self.lock:
-            hailo_rt: dict[str, Any] | None = None
-            if (
-                self._backend == "hailo"
-                and self.detector is not None
-                and hasattr(self.detector, "get_runtime_info")
-            ):
-                try:
-                    hailo_rt = self.detector.get_runtime_info()
-                except Exception:
-                    logger.exception("get_runtime_info failed")
-            return PipelineDebugStats(
-                running=self.running,
-                backend=self._backend,
-                detector_loaded=self.detector is not None,
-                frames_processed=self._frames_processed,
-                frames_waited_none=self._frames_waited_none,
-                last_inference_ms=self._last_inference_ms,
-                inference_fps_ema=round(self._inference_fps_ema, 2),
-                last_frame_shape=list(self._last_frame_shape)
-                if self._last_frame_shape
-                else None,
-                last_frame_mean_rgb=list(self._last_frame_mean_rgb)
-                if self._last_frame_mean_rgb
-                else None,
-                last_frame_std_rgb=list(self._last_frame_std_rgb)
-                if self._last_frame_std_rgb
-                else None,
-                last_detection_count=self._last_detection_count,
-                last_inference_at_iso=self._last_inference_at_iso,
-                last_error=self._last_error,
-                hailo_runtime=hailo_rt,
-            )
-
-    def get_detection_history(self) -> list[DetectionSnapshot]:
-        with self.lock:
-            return list(self._history)
-
     def start(self, cam: Any) -> None:
+        """Start the background inference thread on frames from ``cam``.
+
+        Args:
+            cam: Object with ``latest_frame``, ``lock``, and optional ``capture_for_detection``.
+        """
         if self.detector is None:
             return
         self._cam = cam
@@ -182,20 +123,6 @@ class DetectionManager:
         self._thread = threading.Thread(target=self._loop, args=(cam,), daemon=True)
         self._thread.start()
         print("Detection inference thread started.")
-
-    def _append_history(self, dets: list[Detection]) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        payload = [
-            {
-                "class_id": d.class_id,
-                "class_name": d.class_name,
-                "confidence": round(d.confidence, 4),
-            }
-            for d in dets
-        ]
-        self._history.append(
-            DetectionSnapshot(at=now, count=len(dets), detections=payload)
-        )
 
     def _maybe_console_log(self) -> None:
         if not self._debug_log:
@@ -311,7 +238,6 @@ class DetectionManager:
                 self._last_inference_at_iso = now_iso
                 self._last_error = None
                 self.latest = dets
-                self._append_history(dets)
 
             if self._jsonl_fp is not None:
                 payload = {
@@ -336,6 +262,7 @@ class DetectionManager:
             time.sleep(0.001)
 
     def stop(self) -> None:
+        """Stop the inference thread and release the detector."""
         self.running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)

@@ -9,6 +9,15 @@ log = logging.getLogger(__name__)
 
 
 def parse_size_env(name: str, default: tuple[int, int]) -> tuple[int, int]:
+    """Parse ``WxH`` from an environment variable.
+
+    Args:
+        name: Environment variable name (e.g. ``CAPTURE_SIZE``).
+        default: Value when unset or unparsable.
+
+    Returns:
+        ``(width, height)`` in pixels.
+    """
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -22,15 +31,16 @@ def parse_size_env(name: str, default: tuple[int, int]) -> tuple[int, int]:
 
 
 def manual_exposure_controls_from_env() -> dict | None:
-    """
-    Picamera2 / libcamera manual exposure (rolling shutter / drone jello mitigation).
+    """Build Picamera2 manual exposure controls from environment variables.
 
     If ``ARDUCAM_EXPOSURE_TIME_US`` is set, use it as exposure duration in microseconds.
-    Else if ``ARDUCAM_SHUTTER_DENOM`` is set to N, use 1/N second (``1_000_000 // N`` μs),
-    e.g. ``ARDUCAM_SHUTTER_DENOM=500`` → ~1/500 s.
-
+    Else if ``ARDUCAM_SHUTTER_DENOM`` is set to N, use 1/N second (``1_000_000 // N`` μs).
     When either is used, auto exposure is disabled; optional ``ARDUCAM_MANUAL_ANALOGUE_GAIN``
-    (default ``1.0``) sets analogue gain. Unset both exposure vars to keep auto exposure.
+    (default ``1.0``) sets analogue gain.
+
+    Returns:
+        Picamera2 control dict with ``AeEnable``, ``ExposureTime``, and ``AnalogueGain``,
+        or ``None`` to keep auto exposure.
     """
     raw_us = os.environ.get("ARDUCAM_EXPOSURE_TIME_US", "").strip()
     raw_denom = os.environ.get("ARDUCAM_SHUTTER_DENOM", "").strip()
@@ -70,6 +80,7 @@ class CameraManager:
     """Picamera2 wrapper; imports ``picamera2`` only when :meth:`start` runs (optional ``raspi`` extra)."""
 
     def __init__(self) -> None:
+        """Create an unstarted camera manager (call :meth:`start` to open Picamera2)."""
         self.picam2: object | None = None
         self.latest_frame = None
         self.lock = threading.Lock()
@@ -122,6 +133,7 @@ class CameraManager:
         self.picam2 = Picamera2()
 
     def start(self) -> None:
+        """Configure Picamera2 (dual-stream or single preview) and start the capture thread."""
         from libcamera import controls
         from picamera2 import Picamera2
 
@@ -247,6 +259,7 @@ class CameraManager:
             return self.latest_frame.copy()
 
     def stop(self) -> None:
+        """Stop capture and release the Picamera2 instance."""
         self.running = False
         if self.thread is not None:
             self.thread.join(timeout=1)

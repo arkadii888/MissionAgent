@@ -28,6 +28,18 @@ class LlamaClient:
         max_tokens: int = 1024,
         temperature: float = 0.9,
     ) -> None:
+        """Configure the llama-server HTTP client.
+
+        Args:
+            base_url: Server root URL (e.g. ``http://127.0.0.1:8080``).
+            model_name: Model id passed in chat completion requests.
+            timeout_s: HTTP read timeout per request.
+            max_tokens: Default completion token cap for mission planning.
+            temperature: Sampling temperature for mission planning.
+
+        Raises:
+            ValueError: If ``base_url`` or ``model_name`` is empty.
+        """
         if not base_url:
             raise ValueError("base_url must be set")
         if not model_name:
