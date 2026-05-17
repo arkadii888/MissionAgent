@@ -1,6 +1,6 @@
-# MissionAgent
+# Agent
 
-MissionAgent is the Python orchestrator for an autonomous drone stack. It turns natural-language operator prompts into validated flight missions, uploads them to the vehicle controller over gRPC, and optionally runs onboard vision (ArduCam + Hailo YOLO) with an automatic person-rescue path.
+Agent is the Python orchestrator for an autonomous drone stack. It turns natural-language operator prompts into validated flight missions, uploads them to the vehicle controller over gRPC, and optionally runs onboard vision (ArduCam + Hailo YOLO) with an automatic person-rescue path.
 
 The core design separates **what to do** (LLM-produced intent DSL) from **where to fly** (deterministic waypoint math from live telemetry). Gemma never emits raw latitude/longitude; Python expands intents into protobuf mission items the controller can execute.
 
@@ -95,7 +95,7 @@ flowchart LR
     GT[GetTelemetry]
     SM[StartMission]
   end
-  subgraph agent ["MissionAgent orchestrator"]
+  subgraph agent ["Agent orchestrator"]
     LOOP[loops.py]
     LLM[Gemma via llama-server]
     EXP[expand_intents_to_mission]

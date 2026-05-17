@@ -1,4 +1,4 @@
-# MissionAgent — local llama.cpp build and server helpers
+# Agent: local llama.cpp build and server helpers
 #
 # Uses scripts/build-llama.sh and agent/scripts/run-llama-server.sh
 
