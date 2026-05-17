@@ -89,7 +89,7 @@ def handle_comb_square_area(ctx: ExpansionContext, intent: Mapping[str, Any]) ->
         raise ValueError("lane_spacing_m must be > 0")
 
     corner = _as_corner(intent)
-    lanes = max(1, int(round(side_m / lane_spacing_m)))
+    lanes = max(4, int(round(side_m / lane_spacing_m)))
     step_m = side_m / lanes
 
     north_sign = 1.0

@@ -6,12 +6,13 @@ ROOT := $(abspath .)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build-llama run-llama-server clean-llama
+.PHONY: help build-llama run-llama-server run-loops clean-llama
 
 help:
 	@echo "Targets:"
 	@echo "  build-llama      Configure and build llama.cpp (GGML_METAL=ON) via scripts/build-llama.sh"
 	@echo "  run-llama-server  Start llama-server (reads agent/.env.orchestrator if present)"
+	@echo "  run-loops         Run orchestrator mission loop (sources agent/.env.orchestrator if present)"
 	@echo "  clean-llama      Remove agent/llama.cpp/build"
 	@echo ""
 	@echo "Default model paths are set in agent/scripts/run-llama-server.sh; override with MODEL_PATH, PROJ_PATH, PORT, etc."
@@ -21,6 +22,10 @@ build-llama:
 
 run-llama-server:
 	bash "$(ROOT)/agent/scripts/run-llama-server.sh"
+
+# Optional: ENV_FILE=/path/to/custom.env make run-loops
+run-loops:
+	bash -c 'set -euo pipefail; ENV_FILE="$${ENV_FILE:-$(ROOT)/agent/.env.orchestrator}"; if [ -f "$$ENV_FILE" ]; then set -a; . "$$ENV_FILE"; set +a; fi; cd "$(ROOT)" && uv run python -m agent.orchestrator.loops'
 
 clean-llama:
 	rm -rf "$(ROOT)/agent/llama.cpp/build"

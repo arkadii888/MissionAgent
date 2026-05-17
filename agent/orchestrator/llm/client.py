@@ -1,6 +1,7 @@
 """HTTP client for OpenAI-style chat completions against llama-server."""
 
 import asyncio
+import base64
 import json
 import logging
 from collections.abc import Mapping
@@ -129,6 +130,54 @@ class LlamaClient:
                         f"mission intent plan must be a JSON object, got: {type(final_parsed)}"
                     )
                 return dict(final_parsed)
+
+    async def analyze_image(
+        self,
+        *,
+        system: str,
+        user_text: str,
+        image_jpeg: bytes,
+        mime: str = "image/jpeg",
+        max_tokens: int | None = None,
+    ) -> str:
+        """Send a multimodal prompt with an inline image and return the assistant text.
+
+        The llama-server must be started with ``--mmproj`` for the vision projector to
+        be loaded; otherwise the image data will be ignored by the server.
+
+        Args:
+            system: System message text.
+            user_text: User message text (describes context for the image).
+            image_jpeg: Raw image bytes (JPEG by default).
+            mime: MIME type for the data URI, e.g. ``"image/jpeg"``.
+            max_tokens: Override for this call; defaults to ``self._max_tokens``.
+
+        Returns:
+            Assistant response as a plain string.
+        """
+        b64 = base64.b64encode(image_jpeg).decode("ascii")
+        payload: dict[str, Any] = {
+            "model": self._model_name,
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+            "temperature": self._temperature,
+            "stream": False,
+        }
+        response = await asyncio.to_thread(self._post_chat_completions, payload)
+        self._log_finish_reason(response, "analyze_image")
+        return self._extract_content_text(response)
 
     def _extract_content_text(self, response: Mapping[str, Any]) -> str:
         """Pick assistant text from various OpenAI-compatible response shapes."""

@@ -1,0 +1,352 @@
+import json
+import logging
+import os
+import threading
+import time
+
+import cv2
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from .paths import resolve_model_file
+from .yolo_common import Detection
+from .yolo_hailo import YoloHailoDetector
+
+logger = logging.getLogger(__name__)
+
+_HISTORY_MAX = 100
+_FPS_EMA_ALPHA = 0.15
+_LOG_INTERVAL_SEC = 1.0
+
+
+def _resolve_model_path(path: str | None) -> str | None:
+    if not path:
+        return path
+    p = Path(path)
+    if p.is_absolute():
+        return str(p)
+    return str(resolve_model_file(p))
+
+
+@dataclass
+class DetectionSnapshot:
+    """One recorded inference result for debugging."""
+    at: str
+    count: int
+    detections: list[dict[str, Any]]  # class_name, confidence, class_id
+
+
+@dataclass
+class PipelineDebugStats:
+    running: bool
+    backend: str  # hailo | none
+    detector_loaded: bool
+    frames_processed: int
+    frames_waited_none: int
+    last_inference_ms: float | None
+    inference_fps_ema: float
+    last_frame_shape: list[int] | None
+    last_frame_mean_rgb: list[float] | None
+    last_frame_std_rgb: list[float] | None
+    last_detection_count: int
+    last_inference_at_iso: str | None
+    last_error: str | None
+    hailo_runtime: dict[str, Any] | None = None
+
+
+def _warn_legacy_backend() -> None:
+    pref = os.environ.get("YOLO_BACKEND", "").strip().lower()
+    if pref in ("onnx", "auto", "default", ""):
+        return
+    if pref != "hailo":
+        print(
+            f"YOLO_BACKEND={pref!r} is not supported (Hailo only); ignoring.",
+            flush=True,
+        )
+
+
+def _create_detector(hef_path: str | None) -> tuple[Any | None, str]:
+    """Load YoloHailoDetector from YOLO_HEF_PATH / hef_path."""
+    _warn_legacy_backend()
+    selected_hef_path = _resolve_model_path(
+        hef_path
+        or os.environ.get(
+            "YOLO_HEF_PATH",
+            "models/yolo26n_b8.hef",
+        )
+    )
+    try:
+        return YoloHailoDetector(hef_path=selected_hef_path), "hailo"
+    except Exception as e:
+        print(f"YOLO Hailo failed to initialize: {e}")
+        return None, "none"
+
+
+class DetectionManager:
+    """Background thread: runs YOLO on latest camera frame (drops frames if inference is slower)."""
+
+    def __init__(self, hef_path: str | None = None) -> None:
+        self.latest: list[Detection] = []
+        self.lock = threading.Lock()
+        self.running = False
+        self.detector: Any | None = None
+        self._backend: str = "none"
+        self._thread: threading.Thread | None = None
+
+        # Debug, telemetry (updated under self.lock from inference thread)
+        self._frames_processed = 0
+        self._frames_waited_none = 0
+        self._last_inference_ms: float | None = None
+        self._inference_fps_ema = 0.0
+        self._last_frame_shape: tuple[int, ...] | None = None
+        self._last_frame_mean_rgb: tuple[float, float, float] | None = None
+        self._last_frame_std_rgb: tuple[float, float, float] | None = None
+        self._last_detection_count = 0
+        self._last_inference_at_iso: str | None = None
+        self._last_error: str | None = None
+        self._history: deque[DetectionSnapshot] = deque(maxlen=_HISTORY_MAX)
+        self._last_console_log = 0.0
+
+        self._debug_log = os.environ.get("DETECTION_DEBUG_LOG", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self._debug_frame_stats = os.environ.get("DETECTION_DEBUG_STATS", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self._jsonl_path = os.environ.get("DETECTION_JSONL_PATH", "").strip()
+        self._jsonl_fp: Any = None
+        self._cam: Any | None = None
+        self._use_main_stream = os.environ.get("DETECTION_USE_MAIN_STREAM", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+        self.detector, self._backend = _create_detector(hef_path)
+
+    def get_debug_stats(self) -> PipelineDebugStats:
+        with self.lock:
+            hailo_rt: dict[str, Any] | None = None
+            if (
+                self._backend == "hailo"
+                and self.detector is not None
+                and hasattr(self.detector, "get_runtime_info")
+            ):
+                try:
+                    hailo_rt = self.detector.get_runtime_info()
+                except Exception:
+                    logger.exception("get_runtime_info failed")
+            return PipelineDebugStats(
+                running=self.running,
+                backend=self._backend,
+                detector_loaded=self.detector is not None,
+                frames_processed=self._frames_processed,
+                frames_waited_none=self._frames_waited_none,
+                last_inference_ms=self._last_inference_ms,
+                inference_fps_ema=round(self._inference_fps_ema, 2),
+                last_frame_shape=list(self._last_frame_shape)
+                if self._last_frame_shape
+                else None,
+                last_frame_mean_rgb=list(self._last_frame_mean_rgb)
+                if self._last_frame_mean_rgb
+                else None,
+                last_frame_std_rgb=list(self._last_frame_std_rgb)
+                if self._last_frame_std_rgb
+                else None,
+                last_detection_count=self._last_detection_count,
+                last_inference_at_iso=self._last_inference_at_iso,
+                last_error=self._last_error,
+                hailo_runtime=hailo_rt,
+            )
+
+    def get_detection_history(self) -> list[DetectionSnapshot]:
+        with self.lock:
+            return list(self._history)
+
+    def start(self, cam: Any) -> None:
+        if self.detector is None:
+            return
+        self._cam = cam
+        if self._jsonl_path:
+            self._jsonl_fp = open(self._jsonl_path, "a", encoding="utf-8")
+        self.running = True
+        self._thread = threading.Thread(target=self._loop, args=(cam,), daemon=True)
+        self._thread.start()
+        print("Detection inference thread started.")
+
+    def _append_history(self, dets: list[Detection]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = [
+            {
+                "class_id": d.class_id,
+                "class_name": d.class_name,
+                "confidence": round(d.confidence, 4),
+            }
+            for d in dets
+        ]
+        self._history.append(
+            DetectionSnapshot(at=now, count=len(dets), detections=payload)
+        )
+
+    def _maybe_console_log(self) -> None:
+        if not self._debug_log:
+            return
+        t = time.monotonic()
+        if t - self._last_console_log < _LOG_INTERVAL_SEC:
+            return
+        self._last_console_log = t
+        fps = self._inference_fps_ema
+        shape = self._last_frame_shape
+        mean = self._last_frame_mean_rgb
+        n = self._last_detection_count
+        ms = self._last_inference_ms
+        msg = (
+            f"[detections] fps≈{fps:.2f} infer_ms={ms:.1f} "
+            f"shape={shape} mean_rgb={tuple(round(x, 1) for x in mean) if mean else None} "
+            f"last_count={n}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+
+    def _acquire_frame(self, cam: Any) -> np.ndarray | None:
+        """
+        Prefer non-blocking preview-frame copies for API responsiveness.
+        Opt-in full-res main captures with DETECTION_USE_MAIN_STREAM=1.
+        """
+        if (
+            self._use_main_stream
+            and self._backend == "hailo"
+            and getattr(cam, "_stream_mode", None) == "dual"
+            and hasattr(cam, "capture_for_detection")
+        ):
+            return cam.capture_for_detection()
+        with cam.lock:
+            if cam.latest_frame is None:
+                return None
+            return cam.latest_frame.copy()
+
+    def overlay_scale_for_preview(self) -> tuple[float, float] | None:
+        """
+        Scale full-res detections onto the lores preview/recorder frame when inference used `main`.
+
+        When `DETECTION_USE_MAIN_STREAM` is off (default), we infer on `latest_frame`
+        (same resolution as the Picamera2 lores preview thread), so coordinates already match — do not scale.
+        """
+        if self._backend != "hailo" or self._cam is None:
+            return None
+        if not self._use_main_stream:
+            return None
+        if getattr(self._cam, "_stream_mode", None) != "dual":
+            return None
+        cw, ch = self._cam.capture_size
+        dw, dh = self._cam.stream_display_size
+        if cw <= 0 or ch <= 0:
+            return None
+        return (dw / cw, dh / ch)
+
+    def _loop(self, cam: Any) -> None:
+        assert self.detector is not None
+        while self.running:
+            frame = self._acquire_frame(cam)
+            if frame is None:
+                with self.lock:
+                    self._frames_waited_none += 1
+                time.sleep(0.01)
+                continue
+
+            infer_rgb = frame
+            buf_bgr = (
+                cam.buffer_is_bgr()
+                if hasattr(cam, "buffer_is_bgr")
+                else getattr(cam, "frames_are_bgr", False)
+            )
+            if buf_bgr:
+                infer_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            shape = tuple(int(x) for x in infer_rgb.shape)
+            mean_rgb: tuple[float, float, float] | None = None
+            std_rgb: tuple[float, float, float] | None = None
+            if self._debug_frame_stats and infer_rgb.ndim == 3 and infer_rgb.shape[2] == 3:
+                f = infer_rgb.astype(np.float64)
+                m = f.reshape(-1, 3).mean(axis=0)
+                s = f.reshape(-1, 3).std(axis=0)
+                mean_rgb = (float(m[0]), float(m[1]), float(m[2]))
+                std_rgb = (float(s[0]), float(s[1]), float(s[2]))
+
+            t0 = time.perf_counter()
+            try:
+                dets = self.detector.detect(infer_rgb)
+            except Exception as e:
+                with self.lock:
+                    self._last_error = f"{type(e).__name__}: {e}"
+                logger.exception("Detection inference failed")
+                time.sleep(0.05)
+                continue
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            inst_fps = 1000.0 / elapsed_ms if elapsed_ms > 1e-6 else 0.0
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            with self.lock:
+                self._frames_processed += 1
+                frame_idx = self._frames_processed
+                self._last_frame_shape = shape
+                self._last_frame_mean_rgb = mean_rgb
+                self._last_frame_std_rgb = std_rgb
+                self._last_inference_ms = elapsed_ms
+                if self._inference_fps_ema <= 0:
+                    self._inference_fps_ema = inst_fps
+                else:
+                    self._inference_fps_ema = (1 - _FPS_EMA_ALPHA) * self._inference_fps_ema + _FPS_EMA_ALPHA * inst_fps
+                self._last_detection_count = len(dets)
+                self._last_inference_at_iso = now_iso
+                self._last_error = None
+                self.latest = dets
+                self._append_history(dets)
+
+            if self._jsonl_fp is not None:
+                payload = {
+                    "ts": now_iso,
+                    "frame": frame_idx,
+                    "dets": [
+                        {
+                            "xyxy": [round(x, 2) for x in d.xyxy],
+                            "confidence": round(d.confidence, 4),
+                            "class_id": d.class_id,
+                        }
+                        for d in dets
+                    ],
+                }
+                try:
+                    self._jsonl_fp.write(json.dumps(payload) + "\n")
+                    self._jsonl_fp.flush()
+                except OSError as e:
+                    logger.warning("JSONL write failed: %s", e)
+
+            self._maybe_console_log()
+            time.sleep(0.001)
+
+    def stop(self) -> None:
+        self.running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self._jsonl_fp is not None:
+            try:
+                self._jsonl_fp.close()
+            except OSError:
+                pass
+            self._jsonl_fp = None
+        self._cam = None
+        det = self.detector
+        if det is not None and hasattr(det, "close"):
+            det.close()

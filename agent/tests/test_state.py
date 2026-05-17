@@ -12,12 +12,15 @@ async def test_telemetry_cache_and_mission_state() -> None:
         longitude_deg=2.0,
         relative_altitude_m=3.0,
         absolute_altitude_m=4.0,
+        yaw_deg=45.0,
     )
     await cache.update_from_telemetry(t)
     snap = await cache.get_snapshot()
     assert snap is not None
+    assert snap.yaw_deg == pytest.approx(45.0)
     m = await cache.get_for_prompt()
     assert m is not None and m["latitude_deg"] == pytest.approx(1.0)
+    assert m["yaw_deg"] == pytest.approx(45.0)
 
     ms = MissionState()
     assert (await ms.get_phase()) is MissionPhase.IDLE

@@ -13,6 +13,7 @@ class TelemetrySnapshot:
     """Frozen telemetry row plus capture time (:func:`time.monotonic`).
 
     Attributes:
+        yaw_deg: Vehicle heading in degrees from telemetry.
         monotonic_s: When this sample was recorded (seconds, process monotonic clock).
     """
 
@@ -20,6 +21,7 @@ class TelemetrySnapshot:
     longitude_deg: float
     relative_altitude_m: float
     absolute_altitude_m: float
+    yaw_deg: float
     monotonic_s: float
 
     @classmethod
@@ -30,6 +32,7 @@ class TelemetrySnapshot:
             longitude_deg=float(t.longitude_deg),
             relative_altitude_m=float(t.relative_altitude_m),
             absolute_altitude_m=float(t.absolute_altitude_m),
+            yaw_deg=float(t.yaw_deg),
             monotonic_s=time.monotonic(),
         )
 
@@ -40,6 +43,7 @@ class TelemetrySnapshot:
             "longitude_deg": self.longitude_deg,
             "relative_altitude_m": self.relative_altitude_m,
             "absolute_altitude_m": self.absolute_altitude_m,
+            "yaw_deg": self.yaw_deg,
         }
 
 
@@ -82,4 +86,5 @@ class TelemetryCache:
             "longitude_deg": float("nan"),
             "relative_altitude_m": float("nan"),
             "absolute_altitude_m": float("nan"),
+            "yaw_deg": float("nan"),
         }
