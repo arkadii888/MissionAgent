@@ -26,6 +26,8 @@ class Settings:
         llm_max_tokens: Completion token cap. Env: ``LLM_MAX_TOKENS``.
         llm_temperature: Sampling temperature. Env: ``LLM_TEMPERATURE``.
         max_waypoints: Caps intents in prompts and schema (see also ``MAX_WAYPOINTS`` env).
+        extended_mission_prompts: Use the full intent checklist and few-shot examples in LLM prompts.
+            Env: ``EXTENDED_MISSION_PROMPTS`` (default false).
         mission_json_log_enabled: Append JSON pipeline events when true. Env: ``MISSION_JSON_LOG_ENABLED``.
         mission_json_log_path: JSONL destination path. Env: ``MISSION_JSON_LOG_PATH``.
         rescue_person_conf: Min YOLO person confidence to count a qualifying frame. Env: ``RESCUE_PERSON_CONF``.
@@ -54,6 +56,7 @@ class Settings:
     llm_max_tokens: int
     llm_temperature: float
     max_waypoints: int
+    extended_mission_prompts: bool
     mission_json_log_enabled: bool
     mission_json_log_path: str
 
@@ -84,6 +87,8 @@ class Settings:
             llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
             max_waypoints=int(os.getenv("MAX_WAYPOINTS", "32")),
+            extended_mission_prompts=os.getenv("EXTENDED_MISSION_PROMPTS", "0").strip().lower()
+            in {"1", "true", "yes", "on"},
             mission_json_log_enabled=os.getenv("MISSION_JSON_LOG_ENABLED", "1").strip().lower()
             in {"1", "true", "yes", "on"},
             mission_json_log_path=os.getenv("MISSION_JSON_LOG_PATH", "agent/logs/mission_pipeline.jsonl"),

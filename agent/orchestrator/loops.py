@@ -94,11 +94,16 @@ async def _plan_from_prompt(
     """
     status_line = await mission.prompt_mission_status()
     await mission.begin_planning()
-    system = build_system_prompt(max_waypoints=settings.max_waypoints)
+    extended_prompts = settings.extended_mission_prompts
+    system = build_system_prompt(
+        max_waypoints=settings.max_waypoints,
+        extended=extended_prompts,
+    )
     user = build_user_prompt(
         user_prompt=prompt_text,
         telemetry=telemetry_map,
         mission_status=status_line,
+        extended=extended_prompts,
     )
     log.info("LLM system prompt sent to llama-server:\n%s", system)
     log.info("LLM user prompt sent to llama-server:\n%s", user)

@@ -3,12 +3,30 @@
 from collections.abc import Mapping
 
 
-def build_system_prompt(max_waypoints: int = 32) -> str:
-    """System message: JSON-only output, intent limit, units, and mission shape.
+def _telemetry_block(telemetry: Mapping[str, float]) -> str:
+    return (
+        "Current telemetry:\n"
+        f"- latitude_deg: {telemetry.get('latitude_deg')}\n"
+        f"- longitude_deg: {telemetry.get('longitude_deg')}\n"
+        f"- relative_altitude_m: {telemetry.get('relative_altitude_m')}\n"
+        f"- absolute_altitude_m: {telemetry.get('absolute_altitude_m')}\n"
+        f"- yaw_deg: {telemetry.get('yaw_deg')}\n"
+    )
 
-    Args:
-        max_waypoints: Upper bound on ``intents`` length (should match schema ``maxItems``).
-    """
+
+def _simple_system_prompt(max_waypoints: int) -> str:
+    return (
+        "You are Gemma 4 E2B, a drone mission intent planner. "
+        "Return only valid JSON that matches the provided schema. "
+        f"Create at most {max_waypoints} intents. "
+        "Use only schema-defined intent types. "
+        "Use metric distances in meters and yaw in degrees. "
+        "Prefer complete missions: include takeoff first and land last unless the user explicitly asks otherwise. "
+        "Keep values realistic and concise."
+    )
+
+
+def _extended_system_prompt(max_waypoints: int) -> str:
     return (
         "You are Gemma 4 E2B, a drone mission intent planner. "
         "Return only valid JSON that matches the provided schema. "
@@ -26,27 +44,34 @@ def build_system_prompt(max_waypoints: int = 32) -> str:
     )
 
 
-def build_user_prompt(
-    user_prompt: str,
-    telemetry: Mapping[str, float],
-    mission_status: str = "IDLE",
-) -> str:
-    """User message: request, live telemetry, checklist, examples, and current mission status line.
+def build_system_prompt(max_waypoints: int = 32, *, extended: bool = False) -> str:
+    """System message: JSON-only output, intent limit, units, and mission shape.
 
     Args:
-        user_prompt: Natural-language mission request.
-        telemetry: Keys ``latitude_deg``, ``longitude_deg``, ``relative_altitude_m``, ``absolute_altitude_m``,
-            ``yaw_deg`` (heading in degrees when available).
-        mission_status: Short status string from ``MissionState.prompt_mission_status()``.
+        max_waypoints: Upper bound on ``intents`` length (should match schema ``maxItems``).
+        extended: When true, include coordinate/RTL guidance in the system message.
     """
+    if extended:
+        return _extended_system_prompt(max_waypoints)
+    return _simple_system_prompt(max_waypoints)
+
+
+def _simple_user_body(mission_status: str) -> str:
     return (
-        f"User mission request: {user_prompt}\n"
-        "Current telemetry:\n"
-        f"- latitude_deg: {telemetry.get('latitude_deg')}\n"
-        f"- longitude_deg: {telemetry.get('longitude_deg')}\n"
-        f"- relative_altitude_m: {telemetry.get('relative_altitude_m')}\n"
-        f"- absolute_altitude_m: {telemetry.get('absolute_altitude_m')}\n"
-        f"- yaw_deg: {telemetry.get('yaw_deg')}\n"
+        "Summary:\n"
+        "Convert the request into ordered mission intents using only schema-defined types "
+        "(takeoff, land, move_directional, move_bearing, goto_lat_lon, move_vertical, turn_relative, "
+        "comb_square_area, safety_control). "
+        "Use relative move intents unless the user supplies WGS84 coordinates (then goto_lat_lon). "
+        "Treat return/RTL/go-home shorthand as safety_control return_home, not land alone. "
+        "Output only valid JSON matching the schema (no markdown, no comments).\n"
+        f"Mission status: {mission_status}\n"
+        "Generate mission intents now."
+    )
+
+
+def _extended_user_body(mission_status: str) -> str:
+    return (
         "Intent checklist:\n"
         "1) Convert the user request into an ordered list of mission intents.\n"
         "2) For world-frame compass legs: use move_directional for named directions (north, southeast, …); "
@@ -88,6 +113,26 @@ def build_user_prompt(
         f"Mission status: {mission_status}\n"
         "Generate mission intents now."
     )
+
+
+def build_user_prompt(
+    user_prompt: str,
+    telemetry: Mapping[str, float],
+    mission_status: str = "IDLE",
+    *,
+    extended: bool = False,
+) -> str:
+    """User message: request, live telemetry, guidance, and current mission status line.
+
+    Args:
+        user_prompt: Natural-language mission request.
+        telemetry: Keys ``latitude_deg``, ``longitude_deg``, ``relative_altitude_m``, ``absolute_altitude_m``,
+            ``yaw_deg`` (heading in degrees when available).
+        mission_status: Short status string from ``MissionState.prompt_mission_status()``.
+        extended: When true, include the full intent checklist and few-shot examples.
+    """
+    body = _extended_user_body(mission_status) if extended else _simple_user_body(mission_status)
+    return f"User mission request: {user_prompt}\n{_telemetry_block(telemetry)}{body}"
 
 
 def build_rescue_analysis_system_prompt() -> str:
