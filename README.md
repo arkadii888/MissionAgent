@@ -1,414 +1,202 @@
 # MissionAgent
 
-## llama.cpp build and server
+MissionAgent is the Python orchestrator for an autonomous drone stack. It turns natural-language operator prompts into validated flight missions, uploads them to the vehicle controller over gRPC, and optionally runs onboard vision (ArduCam + Hailo YOLO) with an automatic person-rescue path.
 
-The agent uses [llama.cpp](https://github.com/ggml-org/llama.cpp) as a submodule.
+The core design separates **what to do** (LLM-produced intent DSL) from **where to fly** (deterministic waypoint math from live telemetry). Gemma never emits raw latitude/longitude; Python expands intents into protobuf mission items the controller can execute.
 
-### Prerequisites
+For build instructions, environment variables, vision tuning, intent tables, rescue behavior, and tests, see **[DETAILED.md](DETAILED.md)**.
 
-- **Submodule:** clone with submodules, or after cloning run:
+## Quick start
 
-  ```bash
-  git submodule update --init --recursive
-  ```
-
-- **Models:** place the GGUF model and mmproj under `agent/models/`. The run script defaults to:
-  - `agent/models/gemma-4-E2B-it-Q4_K_M.gguf`
-  - `agent/models/mmproj-F16.gguf`  
-  Set `MODEL_PATH` and `PROJ_PATH` if you use different files (see [Configuration](#configuration)).
-
-### Build
-
-From the repository root:
+### 1. Clone and install Python deps
 
 ```bash
-make build-llama
-```
-
-This runs `scripts/build-llama.sh`, which configures CMake and builds the `llama-server` binary. The output is:
-
-`agent/llama.cpp/build/bin/llama-server`
-
-To remove the build tree and rebuild from scratch:
-
-```bash
-make clean-llama
-make build-llama
-```
-
-### Run the HTTP server
-
-From the repository root:
-
-```bash
-make run-llama-server
-```
-
-This executes `agent/scripts/run-llama-server.sh`, which starts `llama-server` with the default model paths and options. The process listens on **port 8080** unless you change it (see below).
-
-- **Health check:** with the server up, `GET http://127.0.0.1:8080/health` and `GET http://127.0.0.1:8080/v1/health` return JSON such as `{"status":"ok"}`.
-
-### Configuration
-
-Optional environment file: `agent/.env.orchestrator`. If it exists, the run script sources it. You can set sampling, context, batch size, GPU layers (`NGL`), and other variables supported by the script. Commented examples are in that file for binary and model path overrides.
-
-- **Port:** default is `8080` in the run script. To use another port for a single run:
-
-  ```bash
-  PORT=18090 make run-llama-server
-  ```
-
-For a full list of variables and their defaults, open `agent/scripts/run-llama-server.sh`.
-
-### Test gRPC manually
-
-```bash
-source .venv/bin/activate
+git submodule update --init --recursive
 uv sync
-python -m agent.orchestrator.main
 ```
 
-## Tests (`agent/tests`)
+### 2. Download Gemma 4 E2B models (Unsloth GGUF)
 
-From the repository root, install dependencies and run the orchestrator test suite with `uv` (or use an activated virtualenv and `pytest` on your `PATH`).
+`agent/scripts/run-llama-server.sh` expects these files under `agent/models/`:
+
+
+| File                         | Role                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `gemma-4-E2B-it-Q4_K_M.gguf` | Text model (mission planning)                                                               |
+| `mmproj-F16.gguf`            | Vision projector (multimodal / rescue image analysis; omit if `RESCUE_IMAGE_LLM_ENABLED=0`) |
+
+
+Download both from the [Unsloth Gemma 4 E2B GGUF repo](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF) (~3.1 GB + ~986 MB). 
+
+Direct links: [gemma-4-E2B-it-Q4_K_M.gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) · [mmproj-F16.gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf)
+
+Alternatively, use the Hugging Face CLI: `huggingface-cli download unsloth/gemma-4-E2B-it-GGUF gemma-4-E2B-it-Q4_K_M.gguf mmproj-F16.gguf --local-dir agent/models`
+
+### 3. Run llama-server
+
+On a desktop or Mac, build llama.cpp and start the server:
 
 ```bash
-uv sync
-uv run pytest -q agent/tests
+make build-llama && make run-llama-server   # terminal 1: llama-server on :8080
 ```
 
-- **One module:** `uv run pytest -q agent/tests/test_mission_intents.py` or `.../test_state.py`
-- **Verbose output:** add `-s` to show prints, or drop `-q` for default verbosity.
+On a Raspberry Pi 5 (8 GB), use a prebuilt binary instead of building (see below).
 
-End-to-end with a model: `python -m agent.orchestrator.loops` (see Mission test loop below); unit tests stay offline.
+### 4. Run the orchestrator
 
-## Mission test loop (gRPC + llama)
-
-End-to-end integration: poll `GetPrompt` from your C++ side; when the prompt string changes, pull telemetry, call Gemma, upload a mission with `StartMission`, then keep telemetry and a simple mission progress model updated. Requires both services running (see `make run-llama-server` and your gRPC `InternalService`).
-
-```bash
-uv sync
-# Optional: set -a; source agent/.env.orchestrator; set +a
-export GRPC_TARGET=127.0.0.1:50051
-uv run python -m agent.orchestrator.loops
-```
-
-From the repo root you can also run the file directly (the script adds the repo root to `sys.path`):
-
-```bash
-uv run python agent/orchestrator/loops.py
-```
-
-The same string is not processed twice in one run; change the prompt in C++ to request a new mission. Tune `PROMPT_POLL_INTERVAL_S` and `FOLLOW_POLL_INTERVAL_S` (seconds) and `TELEMETRY_POLL_HZ` if needed.
-
-### ArduCam + YOLO vision (optional)
-
-Set **`ARDUCAM_VISION=1`** to start vision alongside the mission loop (see `agent/orchestrator/loops.py`). That path runs, in order:
-
-1. **`configure_vision_environment()`** — if you have not set **`YOLO_BACKEND`**, it defaults to **`hailo`** for compatibility with older env files (inference is Hailo-only).
-2. **`run_rpicam_health_check()`** — quick `rpicam-*` / `libcamera-*` smoke test so the process fails fast if the camera stack is broken.
-3. **`CameraManager`** (`agent/orchestrator/camera_manager.py`) — Picamera2 preview stream (dual **main + lores** when possible, else single stream). Frames are exposed as **`latest_frame`** under a lock.
-4. **`DetectionManager`** (`agent/orchestrator/inference/detection_manager.py`) — loads the **Hailo** YOLO detector and runs a **background thread** that repeatedly grabs the latest frame, runs **`detector.detect(...)`**, and publishes **`latest`** detections (also under a lock) for the recorder and any other consumer.
-5. **`_OverlayRecorder`** (`agent/orchestrator/vision_sidecar.py`) — another thread that copies the preview frame, scales boxes when inference used full-resolution **main** (see below), draws overlays via **`annotate_frame`** (`agent/orchestrator/vision_overlay.py`), and writes an MP4 with **`cv2.VideoWriter`**.
-
-Startup is **fail-fast** if Picamera2 or the detector cannot initialize. Recordings go under **`ARDUCAM_VIDEO_DIR`** (default `/arducamvideos`) as timestamped **`arducam_*.mp4`**.
-
-**Picamera2** is not in `pyproject.toml` (cross-platform lock); on a Pi install it in the venv, e.g. `uv pip install "picamera2>=0.3.31"`, or use the OS package—see **`agent/.env.orchestrator`**.
-
-#### How the YOLO stack works
-
-Inference code lives under **`agent/orchestrator/inference/`**:
-
-| Module | Role |
-| --- | --- |
-| **`detection_manager.py`** | Loads **`YoloHailoDetector`**, resolves **`YOLO_HEF_PATH`**, starts the inference thread, keeps debug stats / optional JSONL history (`DETECTION_JSONL_PATH`). |
-| **`yolo_common.py`** | **`Detection`** dataclass, letterbox / NMS helpers shared with the Hailo path. |
-| **`yolo_hailo.py`** | **`YoloHailoDetector`**: HailoRT + **HEF**; supports end-to-end and multi-head HEF layouts; optional tiling via env (see table below). Returns **`Detection`** in image pixel space. |
-| **`coco_names.py`** | Static COCO-80 names for class ids. |
-| **`paths.py`** | Resolves relative paths like **`models/yolo26n_b8.hef`** by walking up from this package until the file exists (works with different clone layouts). |
-
-Inference is **Hailo-only** (no ONNX runtime in this app). Put the **HEF** under **`agent/models/`** or set absolute **`YOLO_HEF_PATH`** (default relative **`models/yolo26n_b8.hef`**). Legacy **`YOLO_BACKEND`** values other than **`hailo`** are ignored with a console notice.
-
-**Threading contract:** the camera thread only updates **`latest_frame`**. The detection thread **drops frames** if inference is slower than capture (it always processes the most recently acquired buffer for the chosen stream). The recorder thread reads **`latest`** and the same preview frame for drawing; it does not run the network.
-
-**RGB vs BGR:** Picamera **`capture_array`** channel order does **not** always match the stream name. The code uses **`CameraManager.buffer_is_bgr()`** (see `camera_manager.py`): **`RGB888`** streams are treated as **OpenCV BGR** in memory; **`BGR888`** as **RGB** in memory, matching Picamera2’s internal buffer/PIL mapping. **`DetectionManager`** converts **BGR → RGB** before **`detect()`** when needed. For recording, frames are passed to **`VideoWriter`** in **BGR** order. If colors are wrong on your build, set **`ARDUCAM_PIXEL_LAYOUT=bgr`** or **`rgb`** to override.
-
-**Full-resolution inference (optional):** set **`DETECTION_USE_MAIN_STREAM=1`** (and use a **dual** stream) so Hailo can run on **`capture_array("main")`** while the preview/recorder stays on **lores**. **`overlay_scale_for_preview()`** then supplies scale factors so **`vision_sidecar`** can map boxes onto the smaller overlay frame.
-
-#### Environment variables (YOLO + vision)
-
-**Orchestration / Hailo core**
-
-| Variable | Purpose |
-| --- | --- |
-| **`YOLO_BACKEND`** | Optional; **`hailo`** is the only runtime. Other values are ignored (legacy). |
-| **`YOLO_HEF_PATH`** | Hailo **HEF** file; default relative **`models/yolo26n_b8.hef`**. |
-| **`DETECTION_USE_MAIN_STREAM`** | `1` / `true` — Hailo uses **main** full-res on dual stream; overlay scales to lores. |
-| **`DETECTION_DEBUG_LOG`** | Per-second pipeline log lines. |
-| **`DETECTION_DEBUG_STATS`** | Frame mean/std in the debug stats path. |
-| **`DETECTION_JSONL_PATH`** | Append per-frame detection JSON lines. |
-
-**Hailo-only (see docstring in `yolo_hailo.py` for detail)**
-
-| Variable | Purpose |
-| --- | --- |
-| **`YOLO_HAILO_FRAME_MODE`** | Legacy label for **`get_runtime_info()`** / scheduling text; **tiling uses `YOLO_NUMBER_TILES` only**. |
-| **`YOLO_NUMBER_TILES`** | Split each frame into an **N = rows×cols** grid (`N` from this int, default **1** = whole image). Layout picks `(rows, cols)` to match frame aspect. **`N` is clamped** per frame to at most **`ceil(W/model_w)×ceil(H/model_h)`** (model input size from the HEF, typically 640). Each tile is letterboxed to the model, then boxes are stitched with offsets + global NMS. |
-| **`PERSON_NMS_IOU`**, **`YOLO_MAX_CANDIDATES`**, **`YOLO_MAX_DETECTIONS`**, **`YOLO_PERSON_ONLY`**, **`YOLO_THREE_HEAD_BOX_SCALE`** | Post-process / filtering knobs. |
-
-**Camera / color (when `ARDUCAM_VISION=1`)**
-
-| Variable | Purpose |
-| --- | --- |
-| **`ARDUCAM_PIXEL_LAYOUT`** | `bgr` or `rgb` — force buffer interpretation if autodetection is wrong. |
-| **`ARDUCAM_FORCE_RGB888`** / **`ARDUCAM_FORCE_BGR888`** | Prefer one Picamera pixel format first when negotiating the stream. |
-
-#### Thresholds for logging vs model scores
-
-| What | Where | Default |
-| --- | --- | --- |
-| **Person** `log.info` after this confidence on **N** consecutive recorder frames | **`ARDUCAM_PERSON_CONF`**, **`ARDUCAM_PERSON_FRAMES`** | `0.5`, `3` |
-| **Person rescue trigger** fires after this confidence on **N** consecutive frames (see [Person rescue trigger](#person-rescue-trigger)) | **`RESCUE_PERSON_CONF`**, **`RESCUE_PERSON_FRAMES`** | `0.75`, `5` |
-| **Minimum class score** for a kept box (all classes) | **`conf_threshold`** in **`YoloHailoDetector`** (`0.25`); not env-wired | `0.25` |
-| Verbose detection pipeline prints / logs | **`DETECTION_DEBUG_LOG=1`** | off |
-
-## Mission DSL pipeline (Gemma 4 E2B)
-
-The orchestrator now uses a two-stage mission pipeline:
-
-1. **NL -> intent DSL** (Gemma 4 E2B)
-2. **Intent DSL -> mission points** (deterministic Python expansion)
-
-The LLM does not compute latitude/longitude directly; mission points are computed from telemetry origin and cumulative offsets in `agent/orchestrator/mission_intents/`.
-
-Naming conventions used in this repository for this flow:
-- **Mission intent plan**: JSON object produced by Gemma (`mission_name` + `intents`).
-- **Mission items / MissionItemList**: protobuf mission points sent to gRPC.
-- **Model name** in env/tests: `gemma-4-e2b`.
-- **Model file** default in llama server script: `gemma-4-E2B-it-Q4_K_M.gguf`.
-
-### Currently supported mission intents
-
-| Intent type | Required fields | What it does | Implemented in |
-| --- | --- | --- | --- |
-| `takeoff` | `altitude_m` | Adds a takeoff waypoint at telemetry origin with target relative altitude. | `agent/orchestrator/mission_intents/basic.py` |
-| `move` | `north_m`, `east_m`, `up_m` | Updates cumulative north/east/altitude offsets and appends a fly-through waypoint with computed lat/lon. | `agent/orchestrator/mission_intents/basic.py` |
-| `move_directional` | `direction` (`north/south/east/west/northeast/northwest/southeast/southwest`) | World-frame directional move. Supports compass synonyms and optional `distance_m` (default `10`). | `agent/orchestrator/mission_intents/basic.py` |
-| `move_bearing` | `distance_m`, `bearing_deg` | World-frame move on a compass bearing: clockwise from north (0°=north, 90°=east). | `agent/orchestrator/mission_intents/basic.py` |
-| `move_vertical` | `direction` (`down`) | Vertical descend move. Supports descend/down synonyms and optional `distance_m` (default `5`). | `agent/orchestrator/mission_intents/basic.py` |
-| `turn_relative` | none (`type` only) | Turn-around behavior only in phase 1 (180 degrees). Emits a waypoint with updated yaw. | `agent/orchestrator/mission_intents/basic.py` |
-| `safety_control` | `action` (`stop/hold/abort/return_home`) | Safety primitive; marks mission as preempted so subsequent movement/sweep intents are skipped (except `land`). | `agent/orchestrator/mission_intents/basic.py` |
-| `comb_square_area` | none (`type` only) | Deterministic square comb/sweep pattern with optional `side_m`, `lane_spacing_m`, `altitude_m`, `start_corner`. | `agent/orchestrator/mission_intents/area_patterns.py` |
-| `loiter` | `seconds` | Sets loiter duration on the latest waypoint (or creates a stationary waypoint if needed). | `agent/orchestrator/mission_intents/basic.py` |
-| `yaw` | `degrees` | Stores yaw to apply to the next emitted waypoint. | `agent/orchestrator/mission_intents/basic.py` |
-| `return_to_home` | none (`type` only) | Resets cumulative horizontal offsets to origin and appends return waypoint. | `agent/orchestrator/mission_intents/basic.py` |
-| `land` | none (`type` only) | Appends final landing waypoint (`vehicle_action=2`). | `agent/orchestrator/mission_intents/basic.py` |
-
-Phase-1 constraints:
-- World-frame compass movement only (no drone-relative `forward/backward/left/right` parsing).
-- `turn_relative` is intentionally limited to turn-around (180) semantics.
-- `safety_control` acts as a preemption barrier for later movement/sweep intents.
-
-### Mission-item defaults used during conversion
-
-When intents are converted to protobuf mission items, these defaults are applied in `agent/orchestrator/mission_intents/proto.py` unless a handler overrides them:
-
-| Field | Default / rule |
-| --- | --- |
-| `speed_m_s` | always `1.0` |
-| `camera_action` | always `0` |
-| `loiter_time_s` | default `1.0` (overridden by `loiter` intent) |
-| `is_fly_through` | `true` for `move` and `return_to_home`; `false` for `takeoff`/`land` |
-| `vehicle_action` | `1` for `takeoff`, `0` for normal move/return, `2` for `land` |
-| `relative_altitude_m` | clamped to `[0, 50]` meters |
-| `yaw_deg` | normalized to `[-360, 360]`; can be set via `yaw` intent |
-| `gimbal_pitch_deg` / `gimbal_yaw_deg` | `NaN` |
-| `camera_photo_interval_s` | `0.1` |
-| `acceptance_radius_m` | `0.5` |
-| `camera_photo_distance_m` | `NaN` |
-
-Validation contract enforced before upload:
-- latitude in `[-90, 90]`, longitude in `[-180, 180]`
-- altitude in `[0, 50]`
-- `speed_m_s == 1.75`
-- `camera_action == 0`
-- `vehicle_action in {0,1,2,3,4}`
-
-### Run loop with local test mode
-
-Use `agent/.env.orchestrator`:
+**Local demo / no controller:** set in `agent/.env.orchestrator`:
 
 ```bash
 LOCAL_TEST_MODE=1
-MODEL_NAME=gemma-4-e2b
-MISSION_JSON_LOG_ENABLED=1
-MISSION_JSON_LOG_PATH=agent/logs/mission_pipeline.jsonl
 ```
 
-Run:
+Then (terminal 2, no `GRPC_TARGET` needed):
 
 ```bash
-uv sync
-uv run python -m agent.orchestrator.loops
+make run-loops
 ```
 
-### Run loop with gRPC controller
+Type a natural-language mission at the prompt; the loop expands intents and logs mission points without uploading.
 
-Set:
+**With gRPC controller:** set `LOCAL_TEST_MODE=0` (or leave unset) and point at your C++ `InternalService`:
 
 ```bash
-LOCAL_TEST_MODE=0
-GRPC_TARGET=127.0.0.1:50051
-MODEL_NAME=gemma-4-e2b
+export GRPC_TARGET=127.0.0.1:50051
+make run-loops
 ```
 
-Then run:
+### Raspberry Pi 5 (8 GB): prebuilt `llama-server`
+
+On an 8 GB Raspberry Pi 5, **do not** run `make build-llama`. Compiling llama.cpp from source can use several gigabytes of RAM during linking and often fails with out-of-memory errors while the rest of the stack (orchestrator, YOLO, camera) also needs memory.
+
+Instead, download the official **Ubuntu arm64 (CPU)** release binary into the path expected by `agent/scripts/run-llama-server.sh` (default `BINARY_PATH`: `agent/llama.cpp/build/bin/llama-server`). Extract the tarball into that directory so `llama-server` and its bundled `.so` libraries sit side by side.
+
+From the repository root on the Pi:
 
 ```bash
-uv run python -m agent.orchestrator.loops
+LLAMA_RELEASE=b8884   # match the llama.cpp submodule tag, or pick a newer release
+mkdir -p agent/llama.cpp/build/bin
+curl -fL -o /tmp/llama-arm64.tar.gz \
+  "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_RELEASE}/llama-${LLAMA_RELEASE}-bin-ubuntu-arm64.tar.gz"
+tar -xzf /tmp/llama-arm64.tar.gz -C agent/llama.cpp/build/bin --strip-components=1
+chmod +x agent/llama.cpp/build/bin/llama-server
 ```
 
-### JSON pipeline logs
+Then start the server as usual: `make run-llama-server` (after downloading the Unsloth models in step 2 above).
 
-When enabled (`MISSION_JSON_LOG_ENABLED=1`), each prompt writes JSONL records to:
+If you use a different install layout, override `BINARY_PATH` in `agent/.env.orchestrator` to point at your `llama-server` executable.
 
-- `agent/logs/mission_pipeline.jsonl` (or `MISSION_JSON_LOG_PATH`)
+## How it works
 
-Events include:
-- `prompt_received`
-- `intents_generated`
-- `intent_handler_called`
-- `mission_converted`
-- `mission_uploaded` / `mission_upload_failed`
-
-`mission_converted` logs mission items in deterministic protobuf field order for easier diffing/debugging:
-`latitude_deg`, `longitude_deg`, `relative_altitude_m`, `speed_m_s`, `is_fly_through`, `gimbal_pitch_deg`,
-`gimbal_yaw_deg`, `camera_action`, `loiter_time_s`, `camera_photo_interval_s`, `acceptance_radius_m`,
-`yaw_deg`, `camera_photo_distance_m`, `vehicle_action`.
-
-Inspect quickly:
-
-```bash
-rg "mission_converted|mission_upload_failed" agent/logs/mission_pipeline.jsonl
+```mermaid
+flowchart LR
+  subgraph controller ["Vehicle controller (C++)"]
+    GP[GetPrompt]
+    GT[GetTelemetry]
+    SM[StartMission]
+  end
+  subgraph agent ["MissionAgent orchestrator"]
+    LOOP[loops.py]
+    LLM[Gemma via llama-server]
+    EXP[expand_intents_to_mission]
+    VAL[validate_proto_list]
+  end
+  GP --> LOOP
+  GT --> LOOP
+  LOOP --> LLM
+  LLM -->|intent plan JSON| EXP
+  EXP --> VAL
+  VAL --> SM
 ```
 
-## Add a new mission intent
 
-To add a new intent:
 
-1. Add an `IntentSpec` entry to `INTENT_SPECS` in `agent/orchestrator/mission_intents/intent_specs.py` (this defines the schema `enum`/`oneOf` branch and registers the handler with `build_default_registry()` via `expand.build_default_registry()`).
-2. Implement the handler in `agent/orchestrator/mission_intents/` (for example `area_patterns.py` or `basic.py`).
-3. Add/update few-shot examples in `agent/orchestrator/llm/prompts.py` so Gemma 4 E2B emits the new intent.
-4. Add tests in `agent/tests/test_mission_intents.py`.
+### The loop
 
-`agent/orchestrator/llm/schemas.py` pulls the JSON schema from the same specs; edit it only if you need non-intent tweaks (aliases, etc.).
+`agent/orchestrator/loops.py` is the main entry point (`python -m agent.orchestrator.loops`).
 
-## Person rescue trigger
+In **gRPC mode** the loop:
 
-When `ARDUCAM_VISION=1` and a gRPC target is configured, the vision pipeline watches every
-YOLO frame for a person and, once detection criteria are met while the drone is airborne and
-clear of the operator, automatically sends a return-home-and-land mission.
+1. Opens an `InternalGrpcClient` to the controller and starts a background telemetry poller (`GetTelemetry` → `TelemetryCache`).
+2. Polls `GetPrompt` on an interval. When the prompt string changes (and is non-empty), it plans a new mission.
+3. Calls `_plan_from_prompt`: updates `MissionState`, asks the LLM for an intent plan, expands it to waypoints, validates, then `StartMission`.
+4. Records home on the first `takeoff` intent (used by the optional rescue path).
 
-### Trigger state machine
+In **local test mode** (`LOCAL_TEST_MODE=1`), prompts are read from stdin and telemetry comes from env defaults; expansion and logging still run, but nothing is sent over gRPC.
 
-The trigger has three states that transition in one direction only:
+The same prompt text is not processed twice in one process lifetime; change the prompt on the controller side to request a new mission.
 
-```
-SUPPRESSED  ──►  ACTIVE  ──►  DISABLED
-```
+### Mission intents
 
-**SUPPRESSED** (initial state, from process start)
+A **mission intent plan** is JSON shaped as `{ "mission_name": "...", "intents": [ ... ] }`. Each intent is a typed object such as `takeoff`, `move_directional`, `comb_square_area`, or `land`.
 
-Person detections are completely ignored. The trigger will not leave this state until two
-conditions are both true:
+Intent types are declared once in `agent/orchestrator/mission_intents/intent_specs.py` as `IntentSpec` entries. Each spec provides:
 
-1. The first operator mission has been confirmed uploaded via `StartMission` gRPC.
-2. `RESCUE_ARM_DELAY_S` (default 60 s) have elapsed since that upload.
+- A JSON Schema branch used to constrain Gemma’s structured output (`MISSION_INTENT_SCHEMA` in `llm/schemas.py`).
+- A Python **handler** registered in `IntentRegistry` (`mission_intents/registry.py`).
 
-This window exists so the operator standing beside the drone at takeoff is never detected as a
-rescue target. The drone flies away during this time and only then does person detection begin.
+Handlers live in `basic.py` (movement, takeoff, land, safety, yaw, loiter, etc.) and `area_patterns.py` (area sweeps). Adding a new capability means a new spec + handler + few-shot examples in `llm/prompts.py`; see DETAILED.md.
 
-**ACTIVE** (after the arm delay expires)
+Phase-1 movement is **world-frame** (compass directions and bearings), not body-relative forward/back/left/right. `safety_control` can preempt later movement intents; `land` still runs after preemption.
 
-YOLO detections are evaluated on every recorder frame (~15 fps). A frame qualifies when the
-highest-confidence `person` detection reaches at least `RESCUE_PERSON_CONF` (default 0.75).
-The trigger fires when `RESCUE_PERSON_FRAMES` (default 5) qualifying frames occur
-consecutively without a miss. A miss (no person above the threshold in a frame) resets the
-consecutive counter to zero so a brief false positive cannot accumulate across separate sightings.
+### Deterministic expansion
 
-**DISABLED** (permanent, after the trigger fires once)
+`expand_intents_to_mission()` in `mission_intents/expand.py` walks the intent list in order:
 
-Once the trigger fires it is permanently disabled for the rest of the flight. No second rescue
-mission will ever be dispatched regardless of further detections. This is intentional: the drone
-is already flying home, and only one rescue target is expected per search mission.
+1. Seeds an `ExpansionContext` from the current telemetry position (origin lat/lon, cumulative north/east/altitude offsets, pending yaw).
+2. Resolves each intent’s handler from the registry and appends `MissionItem` protobuf messages via `build_proto_item()` in `proto.py`.
+3. Uses flat-earth geometry (`geometry.py`) so every waypoint is derived from the origin plus offsets, never from LLM coordinates.
 
-### What happens when the trigger fires
+Given the same telemetry snapshot and intent plan, expansion is fully reproducible. Operator missions and the autonomous rescue mission both use this same path.
 
-All steps happen near-simultaneously; the vision thread is not blocked by any of them.
+### Validity checks
 
-1. **Snapshots saved** to `RESCUE_PHOTOS_DIR` (default `agent/arducamphotos/`):
-   - `YYYYmmdd_HHMMSS_full.jpg` — full annotated frame with all bounding boxes drawn.
-   - `YYYYmmdd_HHMMSS_person.jpg` — region tightly cropped to the detected person (10 px margin).
+Checks run in layers before any upload:
 
-2. **Rescue mission uploaded** via gRPC (`StartMission`). The mission is deterministic and
-   contains exactly two intents:
-   - `goto_lat_lon` to the stored first-takeoff coordinates at the drone's current altitude
-     (clamped to at least `RESCUE_MIN_RTH_ALT_M`, default 10 m).
-   - `land` at the home point.
 
-3. **Gemma analysis** starts as a parallel asyncio task while the drone is already flying home.
-   The cropped image is sent to the multimodal `llama-server` endpoint (requires `--mmproj`).
-   Gemma is given the estimated drone-relative position of the person and asked to assess:
-   - Terrain and person posture (standing / sitting / lying / unknown).
-   - Health concern level (low / medium / high) with brief reasoning.
-   - A short numbered action plan for rescuers.
-   The full response is written to the orchestrator log (`log.info`) and recorded in the JSON
-   pipeline log under event `rescue_analysis_completed`. Nothing else is done with it yet.
+| Layer        | Where                       | What                                                                                                      |
+| ------------ | --------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Plan input   | `expand.py`                 | Non-empty `intents`; telemetry lat/lon in range                                                           |
+| Per waypoint | `proto.validate_proto_item` | Lat/lon, altitude 0–50 m, speed ≤ 4 m/s, yaw range, `camera_action == 0`, allowed `vehicle_action` values |
+| Mission list | `proto.validate_proto_list` | At least one item; first-item gimbal contract                                                             |
+| Pre-upload   | `expand._validate_contract` | Re-validates the full list before `StartMission`                                                          |
 
-### Home location
 
-The first time a `takeoff` intent is processed by the mission loop, the drone's current
-telemetry lat/lon is recorded as "home". The rescue `goto_lat_lon` flies back to that exact
-point. Override at startup with `RESCUE_HOME_LATITUDE_DEG` + `RESCUE_HOME_LONGITUDE_DEG` env
-vars (useful for bench testing without a real takeoff).
+The LLM is additionally constrained by the JSON schema derived from intent specs; `LlamaClient` retries on malformed JSON. Failures set `MissionState` to error and emit `mission_upload_failed` in the optional JSONL pipeline log (stage: `llm_plan`, `intent_expansion`, or `start_mission_rpc`).
 
-### Person-position estimate
+### Communication with the controller
 
-The offset passed to Gemma is a flat-terrain pinhole-camera projection:
+`agent/orchestrator/grpc_client.py` wraps the generated `InternalService` stub (`protoc/internal_communication.proto`):
 
-- **`forward_m`** — metres in front of the drone along its heading axis.
-- **`right_m`** — metres to the right of the drone.
 
-Inputs are the bounding-box centre, `CAMERA_MOUNT_PITCH_DEG` (default 90 = nadir), and the
-drone's current relative altitude. No world-frame lat/lon is computed yet (drone heading is not
-available in telemetry); a TODO in `agent/orchestrator/rescue/geo.py` documents the upgrade path.
+| RPC            | Direction          | Purpose                                     |
+| -------------- | ------------------ | ------------------------------------------- |
+| `GetPrompt`    | Controller → agent | Operator mission request (natural language) |
+| `GetTelemetry` | Controller → agent | Position and altitude for expansion         |
+| `StartMission` | Agent → controller | Upload validated `MissionItemList`          |
 
-### Env vars
 
-| Variable | Default | Description |
-|---|---|---|
-| `RESCUE_PERSON_CONF` | `0.75` | Min YOLO person confidence score (0–1) per frame |
-| `RESCUE_PERSON_FRAMES` | `5` | Consecutive qualifying frames required before firing |
-| `RESCUE_ARM_DELAY_S` | `60.0` | Seconds after first mission sent before trigger becomes active |
-| `RESCUE_PHOTOS_DIR` | `agent/arducamphotos` | Directory for annotated frame + crop JPEGs |
-| `RESCUE_MIN_RTH_ALT_M` | `10.0` | Safety floor for return-home cruise altitude (metres AGL) |
-| `RESCUE_HOME_LATITUDE_DEG` | _(unset)_ | Hard-code home lat (both lat + lon must be set) |
-| `RESCUE_HOME_LONGITUDE_DEG` | _(unset)_ | Hard-code home lon |
-| `RESCUE_HOME_RELATIVE_ALTITUDE_M` | `0.0` | Hard-code home altitude above ground (metres) |
-| `CAMERA_MOUNT_PITCH_DEG` | `90.0` | Camera tilt from horizontal in degrees (90 = nadir / straight down) |
-| `CAMERA_HFOV_DEG` | `66.0` | Camera horizontal field of view in degrees |
-| `CAMERA_VFOV_DEG` | `41.0` | Camera vertical field of view in degrees |
+Configure the target with `GRPC_TARGET` (default `localhost:50051`). Settings are loaded from the environment via `config.Settings.from_env()`; see `agent/.env.orchestrator` for common variables.
 
-### JSON pipeline log events
+A minimal connectivity smoke test: `python -m agent.orchestrator.main` (one telemetry sample).
 
-Additional events written to `MISSION_JSON_LOG_PATH` during a rescue:
+## Repository layout (orchestrator)
 
-| Event | Contents |
-|---|---|
-| `rescue_plan_built` | Deterministic `goto_lat_lon` + `land` intent dict |
-| `rescue_mission_converted` | Expanded protobuf as ordered dict |
-| `rescue_mission_uploaded` | Confirms `StartMission` gRPC succeeded |
-| `rescue_person_offset_estimated` | `forward_m`, `right_m`, `relative_altitude_m` |
-| `rescue_analysis_completed` | Full Gemma response text + offset context |
-| `rescue_mission_failed` | Error details if intent expansion or gRPC call fails |
-| `rescue_analysis_failed` | Error details if the Gemma call fails |
+
+| Path                                  | Role                                              |
+| ------------------------------------- | ------------------------------------------------- |
+| `agent/orchestrator/loops.py`         | Main async loop                                   |
+| `agent/orchestrator/grpc_client.py`   | gRPC client                                       |
+| `agent/orchestrator/llm/`             | Prompts, schema, llama-server client              |
+| `agent/orchestrator/mission_intents/` | Intent specs, expansion, geometry, proto builders |
+| `agent/orchestrator/state/`           | Mission and telemetry state                       |
+| `agent/orchestrator/inference/`       | Optional Hailo YOLO (with `ARDUCAM_VISION=1`)     |
+| `agent/orchestrator/rescue/`          | Person-detected return-home path                  |
+| `agent/tests/`                        | Unit tests (`uv run pytest -q agent/tests`)       |
+
+
+## Further reading
+
+- **[DETAILED.md](DETAILED.md)**: llama-server tuning, full intent table, vision env vars, JSON pipeline logs, rescue state machine, adding intents
+- `agent/.env.orchestrator`: commented configuration template
+
