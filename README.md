@@ -44,10 +44,12 @@ On a Raspberry Pi 5 (8 GB), use a prebuilt binary instead of building (see below
 
 ### 4. Run the orchestrator
 
-**Local demo / no controller:** set in `agent/.env.orchestrator`:
+**Local demo / no controller or raspberry pi camera:** set in `agent/.env.orchestrator`:
 
 ```bash
 LOCAL_TEST_MODE=1
+
+ARDUCAM_VISION=0
 ```
 
 Then (terminal 2, no `GRPC_TARGET` needed):
